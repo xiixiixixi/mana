@@ -1,0 +1,39 @@
+# Secrets — API keys live in the macOS Keychain. This file (if present) holds
+# only non-secret metadata, but is ignored defensively (and covers the legacy
+# plaintext format + the migration backup).
+.keys.json
+.keys.json.*
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+
+# Local env
+.env*
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# 工具临时目录
+.omo/
+.playwright-mcp/
+
+# 本地个人配置（通知阈值/菜单栏设置）
+.config.json
+
+# 编辑器/构建临时文件
+*.tmp
+*.bak
+*.swp
+*~
+
+# 构建产物
+src-swift/build/
+src-swift/icons/AppIcon.iconset/
+src-swift/icons/icon-1024.png
+
+# 竞品参考代码（不属于本项目）
+竞品TokenBar/

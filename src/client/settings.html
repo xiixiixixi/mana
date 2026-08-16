@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=360, initial-scale=1.0">
+<title>Settings · Mana</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#fafafa;--card:#fff;--ink:#111;--gray:#666;--muted:#999;--border:#e5e5e5;--accent:#ff3b00;--accent-dim:rgba(255,59,0,.08)}
+*{margin:0;padding:0;box-sizing:border-box}
+html{font-size:12.5px;-webkit-font-smoothing:antialiased}
+body{width:360px;min-height:420px;background:var(--card);color:var(--ink);font-family:'Space Mono','SF Mono',Menlo,monospace;border-radius:10px;overflow:hidden}
+::-webkit-scrollbar{width:0}
+header{position:sticky;top:0;background:var(--card);z-index:2;padding:18px 18px 12px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start}
+h1{font-size:14px;font-weight:700;letter-spacing:.18em;text-transform:uppercase}
+.sub{font-size:9px;color:var(--muted);margin-top:4px;letter-spacing:.06em}
+.list{overflow-y:auto;max-height:480px}
+.sec-title{padding:14px 18px 6px;font-size:9px;font-weight:700;letter-spacing:.24em;color:var(--muted)}
+.row{padding:12px 18px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:8px}
+.row-name{font-size:12px;font-weight:700;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.badge{font-size:9px;font-weight:700;letter-spacing:.06em;padding:2px 6px;white-space:nowrap}
+.badge-auto{color:var(--muted);background:var(--bg)}
+.badge-ok{color:var(--accent);background:var(--accent-dim)}
+.keys{display:flex;flex-wrap:wrap;gap:4px}
+.key-tag{display:inline-flex;align-items:center;gap:3px;padding:3px 8px;background:var(--bg);font-size:10px;font-family:inherit}
+.key-tag button{border:none;background:none;color:var(--accent);cursor:pointer;font-size:12px;padding:0 2px;line-height:1}
+.add-row{display:flex;gap:6px}
+.add-input{flex:1;padding:6px 10px;border:1px solid var(--border);font-size:11px;font-family:inherit;outline:none;background:var(--bg)}
+.add-input:focus{border-color:var(--ink)}
+.btn{padding:5px 12px;font-size:10px;font-weight:700;letter-spacing:.06em;cursor:pointer;border:1px solid var(--border);background:var(--card);color:var(--ink);font-family:inherit;white-space:nowrap;border-radius:3px}
+.btn-primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.btn-danger{color:var(--accent);border-color:var(--accent);background:var(--accent-dim)}
+.empty{text-align:center;padding:60px 0;color:var(--muted);font-size:11px}
+/* 偏好设置 */
+.pref{display:grid;grid-template-columns:9em 1fr;gap:8px 10px;align-items:center;font-size:11px}
+.pref label{color:var(--gray)}
+.pref select,.pref input[type=number]{padding:4px 8px;border:1px solid var(--border);font-family:inherit;font-size:11px;background:var(--bg);outline:none;width:100%}
+.pref select:focus,.pref input:focus{border-color:var(--ink)}
+.pref-actions{display:flex;gap:6px;margin-top:4px}
+.toggle{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
+.toggle input{accent-color:var(--ink);width:14px;height:14px}
+/* OAuth */
+.oauth-box{background:var(--bg);border:1px solid var(--border);padding:12px;margin-top:4px}
+.oauth-box .code{font-size:24px;font-weight:700;color:var(--ink);text-align:center;padding:8px 0;background:var(--card);border:1px solid var(--border);margin:8px 0;letter-spacing:.1em}
+.oauth-box .hint{font-size:10px;color:var(--muted);text-align:center;letter-spacing:.06em}
+.toast{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:200;padding:7px 18px;font-size:10px;font-weight:700;letter-spacing:.06em;animation:fadeIn .2s;border-radius:3px}
+.toast-ok{background:var(--ink);color:var(--bg)}
+.toast-err{background:var(--accent);color:#fff}
+@keyframes fadeIn{from{opacity:0;transform:translateX(-50%) translateY(-4px)}}
+</style>
+</head>
+<body>
+<header><div><h1>Mana</h1><div class="sub">settings · keys · notifications</div></div></header>
+<div class="list" id="list"><div class="empty">Loading…</div></div>
+<div id="toast" style="display:none" class="toast"></div>
+<script>
+(function(){
+var $=function(id){return document.getElementById(id)};
+var providers=[],keyStatus={},oauthTimers={},config=null;
+function toast(m,ok){var t=$('toast');t.textContent=m;t.className='toast toast-'+(ok?'ok':'err');t.style.display='block';setTimeout(function(){t.style.display='none'},2500)}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+
+async function load(){
+  try{
+    var p=await fetch('/api/providers');providers=(await p.json()).providers||[];
+    var k=await fetch('/api/keys/status');keyStatus=await k.json();
+    try{var c=await fetch('/api/config');config=await c.json()}catch(e){config=null}
+    render();
+  }catch(e){$('list').innerHTML='<div class="empty">Failed to load</div>'}
+}
+async function reload(){var k=await fetch('/api/keys/status');keyStatus=await k.json();render()}
+
+window.addKey=async function(pid){var inp=document.getElementById('in-'+pid);if(!inp||!inp.value.trim())return;var r=await fetch('/api/keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({providerId:pid,apiKey:inp.value.trim()})});inp.value='';var j=await r.json();if(j.id){toast('Key saved',true);await reload();notifyMain()}else{toast(j.error||'Failed',false)}};
+window.delKey=async function(kid){await fetch('/api/keys/'+kid,{method:'DELETE'});toast('Key removed',true);await reload();notifyMain()};
+
+function notifyMain(){window.location='mana://refresh'}
+
+window.savePrefs=async function(){
+  var body={
+    notify:{
+      enabled:document.getElementById('pref-notify').checked,
+      warnPct:parseInt(document.getElementById('pref-warn').value)||20,
+      criticalPct:Math.max(1,Math.min(90,(parseInt(document.getElementById('pref-warn').value)||20)-10)),
+      balanceWarn:parseFloat(document.getElementById('pref-balance').value)||2
+    },
+    ui:{menubarMode:parseInt(document.getElementById('pref-menubar').value)||2,attentionPct:parseInt(document.getElementById('pref-attention').value)||80}
+  };
+  var r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.ok){config=await r.json();toast('Saved',true);notifyMain()}else{toast('Failed',false)}
+};
+window.testNotify=function(){window.location='mana://notify-test'};
+
+// GitHub Copilot OAuth
+window.githubAuth=async function(){var id='github-copilot';var box=document.getElementById('oauth-'+id);var btn=document.getElementById('gh-btn');
+  btn.disabled=true;btn.textContent='Starting…';
+  try{var r=await fetch('/api/auth/github/device',{method:'POST'});var j=await r.json();
+    if(j.error){toast(j.error,false);btn.disabled=false;btn.textContent='Auth via GitHub';return}
+    box.style.display='block';box.innerHTML='<div class="hint">Verification code (copied)</div><div class="code">'+j.user_code+'</div><div class="hint">Opening browser…</div>';
+    try{navigator.clipboard.writeText(j.user_code)}catch(e){window.location='mana://copy?text='+encodeURIComponent(j.user_code)}
+    window.location='mana://open?url='+encodeURIComponent(j.verification_uri);
+    var dc=j.device_code,delay=(j.interval||5)*1000,fails=0;
+    (function poll(){oauthTimers[id]=setTimeout(async function(){
+      try{var pr=await fetch('/api/auth/github/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_code:dc})});var pj=await pr.json();fails=0;
+        if(pj.status==='success'){box.innerHTML='<div style="font-size:11px;font-weight:700;color:var(--accent)">✓ Authorized</div>';toast('GitHub authorized',true);btn.style.display='none';reload();notifyMain();return}
+        if(pj.status==='error'){box.innerHTML='<div style="font-size:11px;font-weight:700;color:var(--accent)">✕ '+(pj.error||'Failed')+'</div>';btn.disabled=false;btn.textContent='Retry';return}
+        if(pj.status==='slow_down')delay=(pj.interval||10)*1000;
+        poll()}catch(e){if(++fails>=3){box.innerHTML='<div style="font-size:11px;font-weight:700;color:var(--accent)">✕ Network error</div>';btn.disabled=false;btn.textContent='Retry';return}poll()}},delay)})()}catch(e){toast('Failed to start',false);btn.disabled=false;btn.textContent='Auth via GitHub'}};
+
+window.githubDisconnect=async function(){var id='github-copilot';var box=document.getElementById('oauth-'+id);if(oauthTimers[id]){clearTimeout(oauthTimers[id]);delete oauthTimers[id]}
+  await fetch('/api/keys/github-copilot',{method:'DELETE'});box.style.display='none';box.innerHTML='';
+  var btn=document.getElementById('gh-btn');btn.style.display='block';btn.disabled=false;btn.textContent='Auth via GitHub';
+  toast('Disconnected',true);await reload();notifyMain()};
+
+function prefsHtml(){
+  var n=(config&&config.notify)||{enabled:true,warnPct:20,balanceWarn:2};
+  var u=(config&&config.ui)||{menubarMode:2};
+  var h='<div class="sec-title">PREFERENCES</div>';
+  h+='<div class="row"><div class="pref">';
+  h+='<label>配额通知</label><span class="toggle"><input type="checkbox" id="pref-notify"'+(n.enabled?' checked':'')+'><span>剩余不足时系统通知</span></span>';
+  h+='<label>警告阈值</label><select id="pref-warn">';
+  [30,25,20,15,10,5].forEach(function(v){h+='<option value="'+v+'"'+(n.warnPct===v?' selected':'')+'>'+v+'%</option>'});
+  h+='</select>';
+  h+='<label>余额警告</label><input type="number" id="pref-balance" step="0.5" min="0" value="'+(n.balanceWarn!=null?n.balanceWarn:2)+'">';
+  h+='<label>菜单栏显示</label><select id="pref-menubar">';
+  h+='<option value="1"'+(u.menubarMode===1?' selected':'')+'>仅仪表图标</option>';
+  h+='<option value="2"'+(u.menubarMode===2?' selected':'')+'>名字+剩余%</option>';
+  h+='<option value="3"'+(u.menubarMode===3?' selected':'')+'>名字+块条</option>';
+  h+='</select>';
+  h+='<label>菜单栏阈值</label><select id="pref-attention">';
+  [95,90,80,60,40].forEach(function(v){h+='<option value="'+v+'"'+(u.attentionPct===v?' selected':'')+'>'+v+'%</option>'});
+  h+='</select>';
+  h+='</div><div class="pref-actions"><button class="btn btn-primary" onclick="savePrefs()">save</button><button class="btn" onclick="testNotify()">test notify</button></div></div>';
+  return h;
+}
+
+function render(){
+  var h=prefsHtml();
+  h+='<div class="sec-title">PROVIDERS · API KEYS</div>';
+  providers.forEach(function(p){
+    var keys=keyStatus[p.id]||[],auto=p.apiType==='oauth'||p.apiType==='local';
+    h+='<div class="row"><div class="row-name">'+esc(p.name);
+    if(auto)h+='<span class="badge badge-auto">AUTO</span>';
+    if(keys.length)h+='<span class="badge badge-ok">'+keys.length+' key'+(keys.length>1?'s':'')+'</span>';
+    h+='</div>';
+
+    if(p.id==='github-copilot'){
+      var cfgd=keys.length>0;
+      h+='<div id="oauth-'+p.id+'">'+(cfgd?'<div style="font-size:11px;font-weight:700;color:var(--accent)">✓ Authorized</div>':'')+'</div>';
+      h+='<div style="display:flex;gap:6px">';
+      h+='<button class="btn btn-primary" id="gh-btn" onclick="githubAuth()" style="'+(cfgd?'display:none':'')+'">Auth via GitHub</button>';
+      if(cfgd)h+='<button class="btn btn-danger" onclick="githubDisconnect()">Disconnect</button>';
+      h+='</div>';
+    }else if(keys.length){
+      h+='<div class="keys">';keys.forEach(function(k){h+='<span class="key-tag">'+esc(k.hint)+' <button onclick="delKey(\''+k.id+'\')">×</button></span>'});h+='</div>';
+    }
+    if(!auto&&p.id!=='github-copilot'){
+      h+='<div class="add-row"><input class="add-input" id="in-'+p.id+'" type="password" placeholder="API Key"><button class="btn" onclick="addKey(\''+p.id+'\')">Add</button></div>';
+    }
+    h+='</div>';
+  });
+  $('list').innerHTML=h||'<div class="empty">No providers</div>';
+}
+load();
+})();
+</script>
+</body>
+</html>
