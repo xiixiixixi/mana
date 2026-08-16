@@ -3,6 +3,7 @@ const path = require('path');
 const readline = require('readline');
 const { execSync } = require('child_process');
 const { calcCost } = require('./modelPricing');
+const { weightedTokens } = require('./weighted');
 
 const CLAUDE_DIR = path.join(process.env.HOME || '/root', '.claude', 'projects');
 const CODEX_DB = path.join(process.env.HOME || '/root', '.codex', 'state_5.sqlite');
@@ -117,14 +118,14 @@ function parseJsonl(filePath, dailyMap, allMessages, seen) {
         const date = localDate(ts);
         const key = `${date}|${model}`;
         if (!dailyMap[key]) {
-          dailyMap[key] = { date, model, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, costUSD: 0 };
+          dailyMap[key] = { date, model, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, weightedTokens: 0, costUSD: 0 };
         }
         dailyMap[key].inputTokens += inputTokens;
         dailyMap[key].outputTokens += outputTokens;
         dailyMap[key].cacheRead += cacheRead;
         dailyMap[key].cacheCreate += cacheCreate;
+        dailyMap[key].weightedTokens += weightedTokens(inputTokens, outputTokens, cacheRead, cacheCreate);
 
-        const totalTokens = inputTokens + outputTokens + cacheRead + cacheCreate;
         allMessages.push({
           timestamp: new Date(ts).getTime(),
           model,
@@ -132,7 +133,7 @@ function parseJsonl(filePath, dailyMap, allMessages, seen) {
           outputTokens,
           cacheRead,
           cacheCreate,
-          totalTokens,
+          totalTokens: weightedTokens(inputTokens, outputTokens, cacheRead, cacheCreate), // 会话分析口径 = 计费等效
           costUSD: calcCost(model, inputTokens, outputTokens, cacheRead, cacheCreate),
         });
       } catch {}
@@ -353,7 +354,8 @@ function buildResult(dailyMap, allMessages) {
   const summary = { todayTokens: 0, weekTokens: 0, monthTokens: 0, todayCost: 0, weekCost: 0, monthCost: 0, byModel: {} };
 
   for (const e of entries) {
-    const tokens = e.inputTokens + e.outputTokens + e.cacheRead + e.cacheCreate;
+    // 主口径 = 计费等效 tokens（缓存读 0.1×/写 1.25×），原始分项保留在 daily 条目里
+    const tokens = e.weightedTokens != null ? e.weightedTokens : (e.inputTokens + e.outputTokens + e.cacheRead + e.cacheCreate);
 
     if (e.model && e.model !== 'unknown') {
       if (!summary.byModel[e.model]) summary.byModel[e.model] = { today: 0, week: 0, month: 0, total: 0, cost: 0 };

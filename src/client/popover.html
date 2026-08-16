@@ -100,10 +100,10 @@ function localCardHtml(lu){
   if(!lu)return '';
   var parts=[['claude',lu.claude],['codex',lu.codex],['opencode',lu.opencode]].filter(function(p){return p[1]&&p[1].daily&&p[1].daily.length});
   if(!parts.length)return '';
-  // 合并三源 daily（按日聚合 token，不含花费）
+  // 合并三源 daily（主口径 = 计费等效 tokens：缓存读 0.1×/写 1.25×，原始总和会虚高数倍）
   var byDay={},names=[];
   parts.forEach(function(p){names.push(p[0]);(p[1].daily||[]).forEach(function(e){
-    var t=(e.inputTokens||0)+(e.outputTokens||0)+(e.cacheRead||0)+(e.cacheCreate||0);
+    var t=e.weightedTokens!=null?e.weightedTokens:(e.inputTokens||0)+(e.outputTokens||0)+(e.cacheRead||0)+(e.cacheCreate||0);
     byDay[e.date]=(byDay[e.date]||0)+t;
   })});
   var s={today:0,week:0,month:0};
@@ -116,7 +116,7 @@ function localCardHtml(lu){
   var mean=all.reduce(function(a,b){return a+b},0)/(all.length||1);
   var hotDay=null,hotRatio=0;
   days.forEach(function(d){var r=mean>0?byDay[d]/mean:0;if(r>3&&r>hotRatio){hotRatio=r;hotDay=d}});
-  var h='<div class="local-card"><div class="local-title">LOCAL · '+esc(names.join(' / '))+'</div>';
+  var h='<div class="local-card"><div class="local-title" title="计费等效口径：input+output+缓存读×0.1+缓存写×1.25（与额度扣减一致；原始 token 含重复读取的上下文，会虚高数倍）">LOCAL · '+esc(names.join(' / '))+'</div>';
   h+='<div class="local-stats">'
     +'<div class="local-stat"><div class="k">今日</div><div class="v">'+fmtTok(s.today)+'</div></div>'
     +'<div class="local-stat"><div class="k">本周</div><div class="v">'+fmtTok(s.week)+'</div></div>'
