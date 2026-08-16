@@ -47,25 +47,27 @@ async function scanClaudeSessions() {
   const dailyMap = {};
   const allMessages = [];
 
-  const projects = fs.readdirSync(CLAUDE_DIR, { withFileTypes: true })
-    .filter(d => d.isDirectory());
-
-  for (const proj of projects) {
-    const projDir = path.join(CLAUDE_DIR, proj.name);
-    let files;
-    try {
-      files = fs.readdirSync(projDir).filter(f => f.endsWith('.jsonl'));
-    } catch { continue; }
-
-    for (const file of files) {
-      const filePath = path.join(projDir, file);
-      try {
-        const stat = fs.statSync(filePath);
-        if (stat.mtimeMs < cutoff) continue;
-      } catch { continue; }
-
-      await parseJsonl(filePath, dailyMap, allMessages);
+  // 递归收集 *.jsonl：Claude Code 的会话文件在 projects/<项目>/<sessionId>/ 子目录
+  // （以及 memory/、subagents/），只扫第一层会漏掉绝大多数文件
+  const jsonlFiles = [];
+  (function walk(dir, depth) {
+    if (depth > 4) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p, depth + 1);
+      else if (e.name.endsWith('.jsonl')) jsonlFiles.push(p);
     }
+  })(CLAUDE_DIR, 0);
+
+  const seen = new Set(); // 跨会话文件的消息去重（resume/fork 复制场景）
+  for (const filePath of jsonlFiles) {
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.mtimeMs < cutoff) continue;
+    } catch { continue; }
+    await parseJsonl(filePath, dailyMap, allMessages, seen);
   }
 
   allMessages.sort((a, b) => a.timestamp - b.timestamp);
@@ -73,7 +75,14 @@ async function scanClaudeSessions() {
   return buildResult(dailyMap, allMessages);
 }
 
-function parseJsonl(filePath, dailyMap, allMessages) {
+// 本地日期（YYYY-MM-DD，按用户时区切日；此前用 UTC 切片导致"今日"边界差 8 小时）
+function localDate(input) {
+  const d = typeof input === 'number' ? new Date(input) : new Date(input);
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function parseJsonl(filePath, dailyMap, allMessages, seen) {
   return new Promise((resolve) => {
     const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
     const rl = readline.createInterface({ input: stream });
@@ -85,17 +94,27 @@ function parseJsonl(filePath, dailyMap, allMessages) {
         if (obj.type !== 'assistant' || !obj.message?.usage) return;
 
         const usage = obj.message.usage;
+        // 注意：不能按 input_tokens===0 过滤——开启 prompt caching 后绝大多数消息
+        // input_tokens 为 0（输入全在 cache_read/cache_creation），过滤会把它们的
+        // output+cache 全部丢掉，导致严重少计（实测对比 ccusage 差 50 倍以上）。
         const inputTokens = usage.input_tokens || 0;
-        if (inputTokens === 0) return;
-
         const outputTokens = usage.output_tokens || 0;
         const cacheRead = usage.cache_read_input_tokens || 0;
         const cacheCreate = usage.cache_creation_input_tokens || 0;
+        if (inputTokens + outputTokens + cacheRead + cacheCreate === 0) return;
+
         const model = obj.message.model || 'unknown';
         const ts = obj.timestamp;
         if (!ts) return;
-        const date = ts.slice(0, 10);
 
+        // 跨文件去重：resume/fork 会把旧消息复制进新会话文件，message.id 相同
+        const dedupKey = obj.message.id
+          ? obj.message.id
+          : `${ts}|${model}|${inputTokens}|${outputTokens}|${cacheRead}|${cacheCreate}`;
+        if (seen.has(dedupKey)) return;
+        seen.add(dedupKey);
+
+        const date = localDate(ts);
         const key = `${date}|${model}`;
         if (!dailyMap[key]) {
           dailyMap[key] = { date, model, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, costUSD: 0 };
@@ -251,7 +270,7 @@ async function scanCodexUsage() {
       const model = row.model || null;
       if (!model) continue;
       const tokens = row.tokens_used || 0;
-      const date = new Date(row.updated_at * 1000).toISOString().slice(0, 10);
+      const date = localDate(row.updated_at * 1000);
 
       const key = `${date}|${model}`;
       if (!dailyMap[key]) {
@@ -289,7 +308,7 @@ async function scanOpenCodeUsage() {
       } catch {}
 
       const cost = parseFloat(row.cost) || 0;
-      const date = new Date(row.time_created).toISOString().slice(0, 10);
+      const date = localDate(row.time_created);
 
       const key = `${date}|${modelName}`;
       if (!dailyMap[key]) {
@@ -326,10 +345,10 @@ function buildResult(dailyMap, allMessages) {
 
   entries.sort((a, b) => b.date.localeCompare(a.date));
 
-  const now = new Date();
-  const today = now.toISOString().slice(0, 10);
-  const weekAgo = new Date(now - 7 * 86400000).toISOString().slice(0, 10);
-  const monthAgo = new Date(now - 30 * 86400000).toISOString().slice(0, 10);
+  // 今日/本周/本月按本地时区切日（与 daily 桶一致）
+  const today = localDate(Date.now());
+  const weekAgo = localDate(Date.now() - 7 * 86400000);
+  const monthAgo = localDate(Date.now() - 30 * 86400000);
 
   const summary = { todayTokens: 0, weekTokens: 0, monthTokens: 0, todayCost: 0, weekCost: 0, monthCost: 0, byModel: {} };
 

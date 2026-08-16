@@ -45,26 +45,24 @@ class CodexProvider extends BaseProvider {
     const quotas = [];
 
     if (rateLimits) {
-      if (rateLimits.primary) {
-        const p = rateLimits.primary;
+      // 窗口类型由 window_minutes 决定，与 primary/secondary 位置无关
+      // （实测 primary 常为周窗口 10080min；5h 窗口出现在任一位置都按分钟数判别）
+      const windowMeta = (m) => {
+        if (m <= 300) return { label: '5h 窗口', window: '5h' };
+        if (m <= 1440) return { label: '每日额度', window: '1d' };
+        if (m <= 10080) return { label: '每周额度', window: '7d' };
+        return { label: '每月额度', window: '30d' };
+      };
+      for (const w of [rateLimits.primary, rateLimits.secondary]) {
+        if (!w) continue;
+        const meta = windowMeta(w.window_minutes || 10080);
         quotas.push({
-          label: '5小时窗口',
-          used: p.used_percent,
+          label: meta.label,
+          used: w.used_percent,
           total: 100,
           unit: '%',
-          resetIn: p.resets_at ? formatResetAt(p.resets_at * 1000) : null,
-          window: '5h',
-        });
-      }
-      if (rateLimits.secondary) {
-        const s = rateLimits.secondary;
-        quotas.push({
-          label: '每周额度',
-          used: s.used_percent,
-          total: 100,
-          unit: '%',
-          resetIn: s.resets_at ? formatResetAt(s.resets_at * 1000) : null,
-          window: '7d',
+          resetIn: w.resets_at ? formatResetAt(w.resets_at * 1000) : null,
+          window: meta.window,
         });
       }
     }

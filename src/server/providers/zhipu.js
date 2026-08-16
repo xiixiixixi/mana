@@ -25,14 +25,27 @@ class ZhipuProvider extends BaseProvider {
     const tokensLimits = limits.filter(l => l.type === 'TOKENS_LIMIT');
     const timeLimits = limits.filter(l => l.type === 'TIME_LIMIT');
 
+    // 按重置剩余时长判别窗口类型：unit 是平台枚举（实测 3=小时、6=周、5=月），
+    // 但不同套餐组合不一，直接用 nextResetTime 距今的时长分桶最稳。
+    function windowLabel(tl) {
+      if (!tl.nextResetTime) return 'Token额度';
+      const ms = new Date(tl.nextResetTime).getTime() - Date.now();
+      const h = ms / 3600000;
+      if (h <= 8) return '5h 窗口';
+      if (h >= 5 * 24 && h <= 9 * 24) return '每周额度';
+      if (h >= 25 * 24) return '每月额度';
+      return '每日额度';
+    }
+
     for (const tl of tokensLimits) {
+      const label = windowLabel(tl);
       quotas.push({
-        label: tl.nextResetTime ? (tl.unit === 60 && tl.number === 5 ? '5小时额度' : '每周额度') : 'Token额度',
+        label,
         used: tl.percentage || 0,
         total: 100,
         unit: '%',
         resetIn: tl.nextResetTime ? formatResetAt(tl.nextResetTime) : null,
-        window: tl.unit === 60 && tl.number === 5 ? '5h' : '7d',
+        window: label === '5h 窗口' ? '5h' : label === '每周额度' ? '7d' : '30d',
       });
     }
     for (const tl of timeLimits) {
