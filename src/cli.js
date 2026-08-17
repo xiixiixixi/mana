@@ -66,7 +66,7 @@ function pad(s, w) {
     if (json) return console.log(JSON.stringify(j));
     // 主口径：可折算等效的源（claude + opencode）；codex 为平台原始口径，单列
     const w = { today: 0, week: 0, month: 0 };
-    for (const src of [j.claude, j.opencode]) {
+    for (const src of [j.zcode, j.claude, j.opencode]) {
       if (src && src.summary) { w.today += src.summary.todayTokens || 0; w.week += src.summary.weekTokens || 0; w.month += src.summary.monthTokens || 0; }
     }
     console.log(`local usage (billing-equivalent, last 30d)`);

@@ -98,7 +98,7 @@ function resetHtml(q){
 }
 function localCardHtml(lu){
   if(!lu)return '';
-  var parts=[['claude',lu.claude],['opencode',lu.opencode]].filter(function(p){return p[1]&&p[1].daily&&p[1].daily.length});
+  var parts=[['zcode',lu.zcode],['claude',lu.claude],['opencode',lu.opencode]].filter(function(p){return p[1]&&p[1].daily&&p[1].daily.length});
   if(!parts.length)return '';
   // 合并可折算口径的源（claude + opencode，计费等效：缓存读 0.1×/写 1.25×）。
   // Codex 除外：其 tokens_used 是平台原始口径（无缓存分项），与等效口径相加会产生

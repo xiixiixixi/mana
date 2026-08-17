@@ -8,6 +8,7 @@ const { weightedTokens } = require('./weighted');
 const CLAUDE_DIR = path.join(process.env.HOME || '/root', '.claude', 'projects');
 const CODEX_DB = path.join(process.env.HOME || '/root', '.codex', 'state_5.sqlite');
 const OPENCODE_DB = path.join(process.env.HOME || '/root', '.local', 'share', 'opencode', 'opencode.db');
+const ZCODE_DB = path.join(process.env.HOME || '/root', '.zcode', 'cli', 'db', 'db.sqlite');
 
 const SESSION_WINDOW_MS = 5 * 60 * 60 * 1000; // 5 hours
 
@@ -23,15 +24,16 @@ function createLocalUsageService() {
   async function get() {
     if (!isStale()) return cached;
 
-    const [claude, codex, opencode] = await Promise.all([
+    const [claude, codex, opencode, zcode] = await Promise.all([
       scanClaudeSessions(),
       scanCodexUsage(),
       scanOpenCodeUsage(),
+      scanZcodeUsage(),
     ]);
 
     const sessions = buildSessionAnalysis(claude);
 
-    cached = { claude, codex, opencode, sessions, fetchedAt: Date.now() };
+    cached = { claude, codex, opencode, zcode, sessions, fetchedAt: Date.now() };
     cachedAt = Date.now();
     return cached;
   }
@@ -337,6 +339,43 @@ async function scanOpenCodeUsage() {
 
 function emptyResult() {
   return { daily: [], summary: { todayTokens: 0, weekTokens: 0, monthTokens: 0, todayCost: 0, weekCost: 0, monthCost: 0, byModel: {} }, allMessages: [] };
+}
+
+// ── ZCode CLI（model_usage 表：含完整缓存分项，可等效折算） ──
+async function scanZcodeUsage() {
+  if (!fs.existsSync(ZCODE_DB)) return emptyResult();
+
+  const dailyMap = {};
+  try {
+    const sql = `SELECT started_at, model_id, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens
+      FROM model_usage`;
+    const raw = execSync(`sqlite3 '${ZCODE_DB}' -json "${sql}"`, {
+      encoding: 'utf8', timeout: 5000, maxBuffer: 32 * 1024 * 1024,
+    });
+    const rows = JSON.parse(raw || '[]');
+
+    for (const row of rows) {
+      const tokens = (row.input_tokens || 0) + (row.output_tokens || 0)
+        + (row.cache_read_input_tokens || 0) + (row.cache_creation_input_tokens || 0);
+      if (tokens <= 0) continue;
+      const modelName = row.model_id || 'unknown';
+      const date = localDate(row.started_at); // ms
+
+      const key = `${date}|${modelName}`;
+      if (!dailyMap[key]) {
+        dailyMap[key] = { date, model: modelName, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, weightedTokens: 0, costUSD: 0 };
+      }
+      dailyMap[key].inputTokens += row.input_tokens || 0;
+      dailyMap[key].outputTokens += row.output_tokens || 0;
+      dailyMap[key].cacheRead += row.cache_read_input_tokens || 0;
+      dailyMap[key].cacheCreate += row.cache_creation_input_tokens || 0;
+      dailyMap[key].weightedTokens += weightedTokens(row.input_tokens || 0, row.output_tokens || 0, row.cache_read_input_tokens || 0, row.cache_creation_input_tokens || 0);
+    }
+  } catch {
+    return emptyResult();
+  }
+
+  return buildResult(dailyMap, []);
 }
 
 function buildResult(dailyMap, allMessages) {
