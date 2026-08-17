@@ -69,9 +69,14 @@ class CodexProvider extends BaseProvider {
 
     // Always show total usage
     quotas.push({
-      label: '累计用量',
-      used: 0, total: 0, unit: 'M tokens',
-      balance: Math.round(totalTokens / 1e6 * 100) / 100,
+      label: '累计 · 全部历史',
+      used: 0, total: 0,
+      unit: totalTokens >= 1e9 ? 'B tok' : totalTokens >= 1e6 ? 'M tok' : 'k tok',
+      balance: totalTokens >= 1e9
+        ? Math.round(totalTokens / 1e9 * 100) / 100
+        : totalTokens >= 1e6
+          ? Math.round(totalTokens / 1e6 * 100) / 100
+          : Math.round(totalTokens / 1e3 * 100) / 100,
       resetIn: null, window: null,
     });
 

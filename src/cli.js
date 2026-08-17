@@ -63,13 +63,19 @@ function pad(s, w) {
 
   if (cmd === 'local') {
     const j = await get('/api/local-usage');
-    const src = j.claude && j.claude.summary && (j.claude.summary.monthTokens || j.claude.summary.todayTokens) ? j.claude : (j.codex || j.claude);
     if (json) return console.log(JSON.stringify(j));
-    const s = (src && src.summary) || {};
-    console.log(`local usage (last ${days}d window of 30d scan)`);
-    console.log(`  today  ${s.todayTokens || 0} tokens`);
-    console.log(`  week   ${s.weekTokens || 0}`);
-    console.log(`  month  ${s.monthTokens || 0}`);
+    // 主口径：可折算等效的源（claude + opencode）；codex 为平台原始口径，单列
+    const w = { today: 0, week: 0, month: 0 };
+    for (const src of [j.claude, j.opencode]) {
+      if (src && src.summary) { w.today += src.summary.todayTokens || 0; w.week += src.summary.weekTokens || 0; w.month += src.summary.monthTokens || 0; }
+    }
+    console.log(`local usage (billing-equivalent, last 30d)`);
+    console.log(`  today  ${Math.round(w.today)}`);
+    console.log(`  week   ${Math.round(w.week)}`);
+    console.log(`  month  ${Math.round(w.month)}`);
+    if (j.codex && j.codex.summary && j.codex.summary.monthTokens > 0) {
+      console.log(`  codex  ${Math.round(j.codex.summary.monthTokens)} raw tokens this month (platform metric, not comparable)`);
+    }
     return;
   }
 

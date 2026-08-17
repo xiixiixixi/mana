@@ -271,13 +271,16 @@ async function scanCodexUsage() {
       const model = row.model || null;
       if (!model) continue;
       const tokens = row.tokens_used || 0;
-      const date = localDate(row.updated_at * 1000);
+      // 按 created_at 归日：updated_at 会在老线程被再次触碰时刷新，
+      // 把长命线程的全部累计砸进"本周"，造成本周≈全史的假象
+      const date = localDate(row.created_at * 1000);
 
       const key = `${date}|${model}`;
       if (!dailyMap[key]) {
-        dailyMap[key] = { date, model, inputTokens: 0, outputTokens: tokens, cacheRead: 0, cacheCreate: 0, costUSD: 0 };
+        dailyMap[key] = { date, model, inputTokens: 0, outputTokens: tokens, cacheRead: 0, cacheCreate: 0, weightedTokens: tokens, costUSD: 0 };
       } else {
         dailyMap[key].outputTokens += tokens;
+        dailyMap[key].weightedTokens += tokens;
       }
     }
   } catch {
@@ -313,13 +316,14 @@ async function scanOpenCodeUsage() {
 
       const key = `${date}|${modelName}`;
       if (!dailyMap[key]) {
-        dailyMap[key] = { date, model: modelName, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, costUSD: 0 };
+        dailyMap[key] = { date, model: modelName, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0, weightedTokens: 0, costUSD: 0 };
       }
       const entry = dailyMap[key];
       entry.inputTokens += row.tokens_input || 0;
       entry.outputTokens += row.tokens_output || 0;
       entry.cacheRead += row.tokens_cache_read || 0;
       entry.cacheCreate += row.tokens_cache_write || 0;
+      entry.weightedTokens += weightedTokens(row.tokens_input || 0, row.tokens_output || 0, row.tokens_cache_read || 0, row.tokens_cache_write || 0);
       entry.costUSD += cost;
     }
   } catch {
