@@ -40,3 +40,12 @@ src-swift/icons/icon-1024.png
 
 # 设计系统文件包（个人复用，不入库）
 design/
+
+# GitHub OAuth 应用配置（本机个人文件，构建时打包进 app；client_id 虽非密钥，仍不入库）
+.github-oauth.json
+
+# 研究工具临时目录
+.sleuth-tmp/
+
+# DMG 产物（防止被复制到根目录后误传）
+*.dmg
