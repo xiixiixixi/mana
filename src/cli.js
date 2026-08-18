@@ -4,7 +4,18 @@
 //   mana usage [--json] [--provider <id>]   全平台用量（默认按剩余%升序）
 //   mana summary [--json]                   单行摘要：最低剩余 + 平台数
 //   mana local [--days 7] [--json]          本地 CLI 用量（Claude Code/Codex/OpenCode）
-const BASE = 'http://127.0.0.1:41119';
+// 端口发现：优先读端口文件（41119 被占时 Node 会回退并写入），否则扫描 41119-41128
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+function resolveBase() {
+  try {
+    const p = parseInt(fs.readFileSync(path.join(os.homedir(), '.local', 'share', 'mana', 'port'), 'utf8').trim());
+    if (p >= 41119 && p <= 41140) return `http://127.0.0.1:${p}`;
+  } catch {}
+  return null;
+}
+let BASE = null;
 
 const args = process.argv.slice(2);
 const cmd = args[0] || 'usage';
@@ -16,12 +27,25 @@ const provider = provIdx >= 0 ? args[provIdx + 1] : null;
 
 function die(msg) {
   console.error(`mana: ${msg}`);
-  console.error('app 未运行？先启动 Mana.app（菜单栏），服务在 127.0.0.1:41119。');
+  console.error('app 未运行？先启动 Mana.app（菜单栏），服务在 127.0.0.1:41119 起。');
   process.exit(2);
 }
 
 async function get(path) {
   try {
+    if (!BASE) {
+      BASE = resolveBase();
+      if (!BASE) {
+        // 端口文件没有（老版本 app 或未运行），快速探测端口段
+        for (let p = 41119; p <= 41128 && !BASE; p++) {
+          try {
+            const probe = await fetch(`http://127.0.0.1:${p}/api/providers`, { signal: AbortSignal.timeout(600) });
+            if (probe.ok) BASE = `http://127.0.0.1:${p}`;
+          } catch {}
+        }
+        if (!BASE) BASE = 'http://127.0.0.1:41119';
+      }
+    }
     const res = await fetch(BASE + path, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();

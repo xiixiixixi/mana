@@ -149,6 +149,17 @@ func applyItems(_ visible: [MenubarEntry]) {
     }
 }
 
+// MARK: - API 端口（Node 侧 41119 被占时回退 41120+，实际端口写入 ~/.local/share/mana/port）
+func apiPort() -> Int {
+    let f = NSHomeDirectory() + "/.local/share/mana/port"
+    if let s = try? String(contentsOfFile: f, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+       let p = Int(s), (41119...41140).contains(p) {
+        return p
+    }
+    return 41119
+}
+func apiURL(_ path: String) -> URL? { URL(string: "http://127.0.0.1:\(apiPort())\(path)") }
+
 // MARK: - Main Popover
 let mainPopover = NSPopover()
 mainPopover.behavior = .transient
@@ -181,7 +192,7 @@ func showSettings() {
     wv.navigationDelegate = nav
     wv.uiDelegate = nav
     w.contentView = wv; w.center()
-    wv.load(URLRequest(url: URL(string: "http://127.0.0.1:41119/settings.html")!))
+    wv.load(URLRequest(url: apiURL("/settings.html")!))
     settingsWindow = w; w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
 }
 
@@ -220,7 +231,7 @@ class Nav: NSObject, WKNavigationDelegate, WKUIDelegate {
     func reloadWithData() {
         DispatchQueue.main.async {
             print("[mana] navigating to popover.html")
-            mainWV.load(URLRequest(url: URL(string: "http://127.0.0.1:41119/popover.html")!))
+            mainWV.load(URLRequest(url: apiURL("/popover.html")!))
         }
     }
 }
@@ -270,7 +281,7 @@ func startRefresh() {
     }
 }
 func refresh() {
-    guard let url = URL(string: "http://127.0.0.1:41119/api/usage") else { return }
+    guard let url = apiURL("/api/usage") else { return }
     URLSession.shared.dataTask(with: url) { d, _, e in
         guard let d = d, e == nil, let j = try? JSONSerialization.jsonObject(with: d) as? [String:Any],
               let ps = j["providers"] as? [[String:Any]] else { return } // 失败时保留上次的菜单栏状态
@@ -416,7 +427,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         UNUserNotificationCenter.current().delegate = self
         startNode(); startRefresh()
         DispatchQueue.global().async {
-            for _ in 0..<30 { Thread.sleep(forTimeInterval: 0.5); if let u = URL(string: "http://127.0.0.1:41119/api/providers"), let _ = try? Data(contentsOf: u) { break } }
+            for _ in 0..<30 { Thread.sleep(forTimeInterval: 0.5); if let u = apiURL("/api/providers"), let _ = try? Data(contentsOf: u) { break } }
             DispatchQueue.main.async { nav.reloadWithData() }
         }
     }
