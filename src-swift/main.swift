@@ -262,7 +262,7 @@ func startNode() {
 // MARK: - Refresh（统一”剩余”语义：与 services/remaining.js 同规则）
 var timer: Timer?
 func startRefresh() {
-    timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { _ in refresh() }
+    timer = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { _ in refresh() }
     // 启动竞态保护：首次刷新时 Node 侧 provider 抓取可能未完成（失败的平台要等 300s 才补上），
     // 用 3/10/20/40s 密集重试收敛，之后交给 300s 常规节奏
     for delay in [3.0, 10.0, 20.0, 40.0] {
@@ -343,6 +343,7 @@ private func fireNotification(title: String, body: String) {
     content.title = title
     content.body = body
     content.sound = .default
+    content.interruptionLevel = .timeSensitive // 尽量穿透专注模式
     let req = UNNotificationRequest(identifier: "tln-\(UUID().uuidString)", content: content, trigger: nil)
     UNUserNotificationCenter.current().add(req) { err in
         if let err = err { NSLog("[tln] notify add failed: %@", err.localizedDescription) }
@@ -356,6 +357,25 @@ func checkNotifications(_ checks: [(name: String, label: String, q: [String: Any
     let cfg = AppConfig.load()
     guard cfg.notifyEnabled else { return }
     if Date().timeIntervalSince1970 < pauseUntil() { return }
+    // 授权未决定/被拒时不记录去重快照（否则授权完成前的阈值跨越会被白吃掉，
+    // 用户授权后再也不触发——"通知一直不推"的一个根因）
+    UNUserNotificationCenter.current().getNotificationSettings { s in
+        NSLog("[tln] notify authStatus=%d checks=%d", s.authorizationStatus.rawValue, checks.count)
+        switch s.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            checkNotificationsAuthorized(checks, cfg: cfg)
+        case .notDetermined:
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .timeSensitive]) { ok, _ in
+                if ok { checkNotificationsAuthorized(checks, cfg: cfg) }
+            }
+        case .denied:
+            break
+        @unknown default:
+            break
+        }
+    }
+}
+private func checkNotificationsAuthorized(_ checks: [(name: String, label: String, q: [String: Any])], cfg: AppConfig) {
     let snapKey = "tln.notifySnap"
     var snap = UserDefaults.standard.dictionary(forKey: snapKey) as? [String: Int] ?? [:]
     var changed = false
