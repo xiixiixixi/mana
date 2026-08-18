@@ -18,7 +18,7 @@ h1{font-size:12px;font-weight:700;letter-spacing:.28em;text-transform:uppercase;
 .btn-primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 .btn:active{transform:translateY(1px)}
 .status-bar{padding:6px 16px;font-size:10px;color:var(--gray);display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
-.dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.st{font-weight:700;flex-shrink:0}.st.ok{color:var(--green)}.st.warn{color:var(--yellow)}.st.err{color:var(--red)}.st.na{color:var(--muted)}
 .legend{margin-left:auto;color:var(--muted)}
 .list{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
 .card{background:var(--card);padding:12px 14px;border:1px solid var(--border)}
@@ -62,7 +62,7 @@ footer{position:sticky;bottom:0;background:var(--bg);padding:8px 16px;border-top
   <h1>Mana</h1>
   <div class="actions"><button class="btn" id="btnRefresh">refresh</button><button class="btn btn-primary" id="btnSettings">config</button></div>
 </header>
-<div class="status-bar"><span class="dot" id="dot"></span><span id="statusText">loading…</span><span class="legend">剩% · ↻重置</span></div>
+<div class="status-bar"><span class="st na" id="dot">[--]</span><span id="statusText">loading…</span><span class="legend">剩% · 重置</span></div>
 <div class="list" id="list"><div class="empty"><div class="empty-num">—</div><div class="empty-text">loading…</div></div></div>
 <footer><span id="footerLeft">Mana</span><span>local · keychain</span></footer>
 <script>
@@ -78,7 +78,7 @@ function rem(q){
 }
 function minRem(quotas){var m=null;(quotas||[]).forEach(function(q){var v=rem(q);if(v!=null&&(m===null||v<m))m=v});return m}
 function cls(v){return v==null?'na':v<5?'crit':v<20?'warn':''}
-function dotc(m){return m==null?'var(--muted)':m<5?'var(--red)':m<20?'var(--yellow)':'var(--green)'}
+function stState(m){return m==null?'na':m<5?'err':m<20?'warn':'ok'}
 function fmtTok(n){
   if(n>=1e9)return (n/1e9).toFixed(1)+'B';
   if(n>=1e6)return (n/1e6).toFixed(1)+'M';
@@ -93,8 +93,8 @@ function barHtml(v,clsName){
 }
 function resetHtml(q){
   var r=q&&q.resetIn?String(q.resetIn):'';
-  if(r)return '<span class="qreset">↻ '+esc(r)+'</span>';
-  return '<span class="qreset na" title="预付余额无重置周期">↻ --</span>';
+  if(r)return '<span class="qreset">'+esc(r)+'</span>';
+  return '<span class="qreset na" title="预付余额无重置周期">--</span>';
 }
 function localCardHtml(lu){
   if(!lu)return '';
@@ -143,7 +143,9 @@ function render(){
   var balanceOnly=ok.filter(function(p){return minRem(p.quotas)==null});
   var sorted=withPct.concat(balanceOnly).concat(err);
   var m=withPct.length?Math.min.apply(null,withPct.map(function(p){return minRem(p.quotas)})):null;
-  $('dot').style.background=sorted.length?dotc(m):'var(--muted)';
+  var stt=sorted.length?stState(m):'na';
+  $('dot').textContent='['+(stt==='na'?'--':stt)+']';
+  $('dot').className='st '+stt;
   $('statusText').textContent='updated '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})+' · '+ok.length+' platforms'+(err.length?' · '+err.length+' err':'');
   if(!sorted.length){
     $('list').innerHTML='<div class="empty"><div class="empty-num">000</div><div class="empty-text">configure API keys<br>to monitor your AI usage</div></div>';
@@ -173,12 +175,12 @@ function render(){
         h+='<span class="qamt">'+esc(amt)+'</span>';
         h+=resetHtml(q);
       }else if(q.unlimited){
-        h+='<span></span><span class="qpct">∞</span><span class="qreset na" title="无限额度">↻ --</span>';
+        h+='<span></span><span class="qpct">∞</span><span class="qreset na" title="无限额度">--</span>';
       }else{
         h+='<span></span><span class="qpct na">--</span>'+resetHtml(q);
       }
     });
-    if(!(p.quotas||[]).length&&p.status!=='error')h+='<span class="qtrack">无额度数据</span><span></span><span class="qpct na">--</span><span class="qreset na">↻ --</span>';
+    if(!(p.quotas||[]).length&&p.status!=='error')h+='<span class="qtrack">无额度数据</span><span></span><span class="qpct na">--</span><span class="qreset na">--</span>';
     h+='</div>';
     if(p.status==='error'&&p.error)h+='<div class="card-error">'+esc(p.error)+'</div>';
     h+='</div>';
@@ -196,7 +198,7 @@ function refresh(){
     data=results[0].providers||[]; keyStatus=results[1]; local=results[2]; render();
   }).catch(function(e){
     $('statusText').textContent='err: '+e.message;
-    $('dot').style.background='var(--red)';
+    $('dot').textContent='[err]';$('dot').className='st err';
   })
 }
 $('btnRefresh').onclick=function(){window.location='mana://refresh'};

@@ -37,3 +37,6 @@ src-swift/icons/icon-1024.png
 
 # 竞品参考代码（不属于本项目）
 竞品TokenBar/
+
+# 设计系统文件包（个人复用，不入库）
+design/

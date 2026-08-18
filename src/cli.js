@@ -125,7 +125,7 @@ function pad(s, w) {
   for (const r of rows) {
     const bal = r.unlimited ? '∞' : (r.balance != null ? `bal ${r.balance}` : '--');
     const val = r.pct != null ? `${bar(r.pct)} ${String(r.pct).padStart(3)}%` : bal.padStart(14);
-    console.log(`${pad(r.name, nameW)}  ${pad(r.track, trW)}  ${val}  ↻${r.reset}`);
+    console.log(`${pad(r.name, nameW)}  ${pad(r.track, trW)}  ${val}  ${r.reset}`);
   }
   if (!rows.length) console.log('(no data — check keys in Mana settings)');
 })();
