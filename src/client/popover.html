@@ -18,7 +18,7 @@ h1{font-size:12px;font-weight:700;letter-spacing:.28em;text-transform:uppercase;
 .btn-primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 .btn:active{transform:translateY(1px)}
 .status-bar{padding:6px 16px;font-size:10px;color:var(--gray);display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
-.st{font-weight:700;flex-shrink:0}.st.ok{color:var(--green)}.st.warn{color:var(--yellow)}.st.err{color:var(--red)}.st.na{color:var(--muted)}
+.st{font-weight:700;flex-shrink:0}.st.ok{color:var(--green)}.st.warn{color:var(--yellow)}.st.crit{color:var(--red)}.st.err{color:var(--red)}.st.na{color:var(--muted)}
 .legend{margin-left:auto;color:var(--muted)}
 .list{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
 .card{background:var(--card);padding:12px 14px;border:1px solid var(--border)}
@@ -78,7 +78,7 @@ function rem(q){
 }
 function minRem(quotas){var m=null;(quotas||[]).forEach(function(q){var v=rem(q);if(v!=null&&(m===null||v<m))m=v});return m}
 function cls(v){return v==null?'na':v<5?'crit':v<20?'warn':''}
-function stState(m){return m==null?'na':m<5?'err':m<20?'warn':'ok'}
+function stState(m){return m==null?'na':m<5?'crit':m<20?'warn':'ok'}
 function fmtTok(n){
   if(n>=1e9)return (n/1e9).toFixed(1)+'B';
   if(n>=1e6)return (n/1e6).toFixed(1)+'M';

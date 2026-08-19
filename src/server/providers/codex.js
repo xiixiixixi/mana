@@ -15,6 +15,24 @@ const CODEX_AUTH = path.join(os.homedir(), '.codex', 'auth.json');
 const CODEX_REFRESH_ENDPOINT = 'https://auth.openai.com/oauth/token';
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/codex/usage';
+// 最近一次成功的实时配额落盘处（只存用量数字，绝不存 token）。重启后冷启动若首个
+// 实时请求被拦，用它兜底而不是闪回可能很旧的本地 rollout 快照。
+const CODEX_LAST_GOOD = path.join(os.homedir(), '.local', 'share', 'mana', 'codex-usage.json');
+
+function saveLastGoodUsage(usage) {
+  try {
+    fs.mkdirSync(path.dirname(CODEX_LAST_GOOD), { recursive: true });
+    fs.writeFileSync(CODEX_LAST_GOOD, JSON.stringify({ at: Date.now(), usage }));
+  } catch {}
+}
+
+function loadLastGoodUsage() {
+  try {
+    const d = JSON.parse(fs.readFileSync(CODEX_LAST_GOOD, 'utf8'));
+    if (d?.usage?.rate_limit && d.at) return d;
+  } catch {}
+  return null;
+}
 
 async function readCodexTokens() {
   try {
@@ -75,6 +93,9 @@ async function fetchCodexOAuthUsage() {
 }
 
 class CodexProvider extends BaseProvider {
+  // 最近一次成功的 OAuth 实时结果（内存级；重启后丢失去本地快照兜底）
+  static lastOauth = null;
+
   constructor() {
     super({
       id: 'codex', name: 'Codex', icon: 'CX',
@@ -92,37 +113,71 @@ class CodexProvider extends BaseProvider {
       || fs.existsSync(path.join(c, 'sessions'));
   }
 
+  // OAuth 实时结果与本地快照的窗口字段名不一致：
+  // HTTP API 用 limit_window_seconds / reset_at；rollout jsonl 用 window_minutes / resets_at。
+  // 统一归一化成一个窗口描述，两个数据源共用。
+  mapWindow(w) {
+    const minutes = (w.limit_window_seconds ? w.limit_window_seconds / 60 : w.window_minutes) || 10080;
+    if (minutes <= 300) return { label: '5h 窗口', window: '5h', minutes };
+    if (minutes <= 1440) return { label: '每日额度', window: '1d', minutes };
+    if (minutes <= 10080) return { label: '每周额度', window: '7d', minutes };
+    return { label: '每月额度', window: '30d', minutes };
+  }
+
+  // 窗口 quota 数组：used_percent + 重置时刻（两种字段名都认）
+  buildWindowQuotas(windows) {
+    const quotas = [];
+    for (const w of windows) {
+      if (!w) continue;
+      const meta = this.mapWindow(w);
+      const resetAt = w.reset_at ?? w.resets_at;
+      quotas.push({
+        label: meta.label,
+        used: w.used_percent,
+        total: 100, unit: '%',
+        resetIn: resetAt ? formatResetAt(resetAt * 1000) : null,
+        window: meta.window,
+      });
+    }
+    return quotas;
+  }
+
   async fetchUsage() {
     const homeDir = os.homedir();
 
     // 1. 优先 OAuth 实时配额
     const oauth = await fetchCodexOAuthUsage().catch(() => null);
     if (oauth?.rate_limit) {
-      const quotas = [];
-      const windowMeta = (m) => {
-        if (m <= 300) return { label: '5h 窗口', window: '5h' };
-        if (m <= 1440) return { label: '每日额度', window: '1d' };
-        if (m <= 10080) return { label: '每周额度', window: '7d' };
-        return { label: '每月额度', window: '30d' };
-      };
-      for (const w of [oauth.rate_limit.primary_window, oauth.rate_limit.secondary_window]) {
-        if (!w) continue;
-        const meta = windowMeta(w.window_minutes || 10080);
-        quotas.push({
-          label: meta.label,
-          used: w.used_percent,
-          total: 100, unit: '%',
-          resetIn: w.resets_at ? formatResetAt(w.resets_at * 1000) : null,
-          window: meta.window,
-        });
-      }
+      const quotas = this.buildWindowQuotas([
+        oauth.rate_limit.primary_window,
+        oauth.rate_limit.secondary_window,
+      ]);
       if (quotas.length) {
+        // 记住最近一次成功的实时结果（内存 + 落盘）：网络间歇失败时拿它跟本地快照比新旧，
+        // 避免在「实时 100%」与「昨日快照 1%」之间来回跳
+        CodexProvider.lastOauth = { usage: oauth, at: Date.now() };
+        saveLastGoodUsage(oauth);
         return this.buildUsage({ status: 'active', plan: oauth.plan_type || 'Codex', quotas });
       }
     }
 
-    // 2. 回退：本地 rollout 快照（标注数据时点，避免把旧值当实时）
+    // 2. 回退：实时调不通时，取「上次成功的实时结果」（内存 → 落盘）与「本地 rollout 快照」中较新者
     const snapshot = this.readLatestRateLimits(homeDir);
+    const last = CodexProvider.lastOauth || loadLastGoodUsage();
+    const snapshotAt = snapshot?.mtime?.getTime() || 0;
+    if (last && last.at > snapshotAt) {
+      const quotas = this.buildWindowQuotas([
+        last.usage.rate_limit.primary_window,
+        last.usage.rate_limit.secondary_window,
+      ]);
+      const at = new Date(last.at);
+      const when = `${at.toLocaleDateString('zh-CN',{month:'numeric',day:'numeric'})} ${at.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`;
+      return this.buildUsage({
+        status: 'active',
+        plan: `${last.usage.plan_type || 'Codex'} · 实时缓存 ${when}`,
+        quotas,
+      });
+    }
     const rateLimits = snapshot?.rateLimits;
     const staleNote = snapshot?.mtime
       ? `本地快照 ${snapshot.mtime.toLocaleDateString('zh-CN',{month:'numeric',day:'numeric'})} ${snapshot.mtime.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`
@@ -147,26 +202,9 @@ class CodexProvider extends BaseProvider {
     const quotas = [];
 
     if (rateLimits) {
-      // 窗口类型由 window_minutes 决定，与 primary/secondary 位置无关
+      // 窗口类型按分钟数判别，与 primary/secondary 位置无关
       // （实测 primary 常为周窗口 10080min；5h 窗口出现在任一位置都按分钟数判别）
-      const windowMeta = (m) => {
-        if (m <= 300) return { label: '5h 窗口', window: '5h' };
-        if (m <= 1440) return { label: '每日额度', window: '1d' };
-        if (m <= 10080) return { label: '每周额度', window: '7d' };
-        return { label: '每月额度', window: '30d' };
-      };
-      for (const w of [rateLimits.primary, rateLimits.secondary]) {
-        if (!w) continue;
-        const meta = windowMeta(w.window_minutes || 10080);
-        quotas.push({
-          label: meta.label,
-          used: w.used_percent,
-          total: 100,
-          unit: '%',
-          resetIn: w.resets_at ? formatResetAt(w.resets_at * 1000) : null,
-          window: meta.window,
-        });
-      }
+      quotas.push(...this.buildWindowQuotas([rateLimits.primary, rateLimits.secondary]));
     }
 
     // Always show total usage
