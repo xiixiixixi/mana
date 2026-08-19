@@ -84,6 +84,14 @@ class CodexProvider extends BaseProvider {
     });
   }
 
+  // 本机没有 ~/.codex（未装 Codex CLI）时整个平台不进首页
+  isConfigured() {
+    const c = path.join(os.homedir(), '.codex');
+    return fs.existsSync(path.join(c, 'auth.json'))
+      || fs.existsSync(path.join(c, 'state_5.sqlite'))
+      || fs.existsSync(path.join(c, 'sessions'));
+  }
+
   async fetchUsage() {
     const homeDir = os.homedir();
 

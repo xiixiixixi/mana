@@ -17,6 +17,12 @@ class BaseProvider {
     throw new Error(`fetchUsage not implemented for ${this.id}`);
   }
 
+  // 当前环境是否具备该 provider 的凭证/数据源（决定是否纳入首页展示）。
+  // key 型由外层 hasKey 判断，恒 true；oauth/local 型覆写为各自的探测逻辑。
+  isConfigured(_sid, _keyStore) {
+    return true;
+  }
+
   validateKey(key) {
     return typeof key === 'string' && key.trim().length > 0;
   }

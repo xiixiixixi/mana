@@ -15,6 +15,11 @@ class GithubCopilotProvider extends BaseProvider {
     });
   }
 
+  // 未做过 OAuth 授权时整个平台不进首页（设置页仍可配置）
+  isConfigured(sid, keyStore) {
+    return keyStore.getAllKeysForProvider(sid, this.id).length > 0;
+  }
+
   async fetchUsage(token) {
     if (!token) throw new Error('未连接 GitHub。请在设置中点击「授权」按钮进行 OAuth 登录。');
 

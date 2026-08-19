@@ -275,3 +275,45 @@ test('S6 /api/usage returns cached usage without calling fetchUsage', async () =
     await server.close();
   }
 });
+
+test('S7 /api/usage hides oauth/local providers whose environment has no credentials', async () => {
+  const makeOauth = (configured) => ({
+    getMetadata() { return { id: 'oauthp', name: 'oauthp' }; },
+    apiType: 'oauth',
+    cacheTTL: 60,
+    isConfigured: () => configured,
+    fetchUsage: async () => { throw new Error('未连接 GitHub'); },
+  });
+
+  // 未配置（无 OAuth token）→ 完全不出现在首页数据里
+  {
+    const server = await startApiServer(
+      new Map([['oauthp', makeOauth(false)]]),
+      createKeyStore({}),
+      createNullCache(),
+    );
+    try {
+      const { body } = await getJson(server.baseUrl, '/api/usage');
+      assert.equal(body.providers.filter(p => p.id === 'oauthp').length, 0);
+    } finally {
+      await server.close();
+    }
+  }
+
+  // 已配置但取数失败 → 仍出现（错误卡，便于发现过期凭证）
+  {
+    const server = await startApiServer(
+      new Map([['oauthp', makeOauth(true)]]),
+      createKeyStore({}),
+      createNullCache(),
+    );
+    try {
+      const { body } = await getJson(server.baseUrl, '/api/usage');
+      const entry = body.providers.find(p => p.id === 'oauthp');
+      assert.ok(entry);
+      assert.equal(entry.status, 'error');
+    } finally {
+      await server.close();
+    }
+  }
+});

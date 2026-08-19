@@ -22,7 +22,12 @@ function createApiRouter(providers, keyStore, cache) {
     for (const [pid, provider] of providers) {
       // keyStatus[pid] 现在是数组（多 key）
       const hasKey = Array.isArray(keyStatus[pid]) ? keyStatus[pid].length > 0 : keyStatus[pid]?.configured;
-      if (hasKey || autoTypes.has(provider.apiType)) {
+      // oauth/local 型平台只在环境里确有凭证/数据源时才纳入——
+      // 未授权的 Copilot、未安装的 Codex 不进首页（配置过但失效的仍展示错误，便于发现）
+      const autoOk = autoTypes.has(provider.apiType)
+        && typeof provider.isConfigured === 'function'
+        && provider.isConfigured(sid, keyStore);
+      if (hasKey || autoOk) {
         configured.push(pid);
       }
     }
