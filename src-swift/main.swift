@@ -540,7 +540,8 @@ func swapIn(dmg: URL, latest: String) {
         return
     }
     // 原地替换：旧包改名保底 → 拷入新包 → 失败回滚
-    let old = dest.deletingLastPathComponent().appendingPathComponent("Mana.old.\(Int(Date().timeIntervalSince1970))")
+    let ts = Int(Date().timeIntervalSince1970)
+    let old = dest.deletingLastPathComponent().appendingPathComponent("\(dest.lastPathComponent).old.\(ts)")
     do {
         try fm.moveItem(at: dest, to: old)
         do { try fm.copyItem(at: srcApp, to: dest) }
@@ -551,12 +552,12 @@ func swapIn(dmg: URL, latest: String) {
     } catch { failUpdate("移动旧版本失败：\(error.localizedDescription)"); return }
     // ad-hoc 签名无公证：剥离 quarantine，升级后免"右键打开"
     _ = runCmd("/usr/bin/xattr", ["-rd", "com.apple.quarantine", dest.path])
-    // 旧包进废纸篓（运行中的二进制走 inode，不受影响）
-    NSWorkspace.shared.recycle([old], completionHandler: nil)
-    // 看门 shell：等本进程退出后再 open 新包（open 两次兜底启动竞态）
+    // 看门 shell：等本进程退出后再 open 新包（open 两次兜底启动竞态），
+    // 旧包清理放这里——NSWorkspace.recycle 在进程退出途中会静默失败（e2e 实测），
+    // shell 比 app 活得久，rm -rf 可靠
     let sh = Process()
     sh.executableURL = URL(fileURLWithPath: "/bin/sh")
-    sh.arguments = ["-c", "sleep 2; open \"\(dest.path)\"; sleep 3; open \"\(dest.path)\""]
+    sh.arguments = ["-c", "sleep 2; open \"\(dest.path)\"; sleep 3; open \"\(dest.path)\"; rm -rf \"\(old.path)\""]
     try? sh.run()
     postNotification(title: "Mana 已升级到 v\(latest.isEmpty ? "?" : latest)", body: "正在重启…")
     DispatchQueue.main.async { NSApp.terminate(nil) }
