@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { execFileSync } = require('child_process');
 const crypto = require('crypto');
 
@@ -14,12 +15,13 @@ const SECURITY_BIN = '/usr/bin/security';
 function createKeyStore(options = {}) {
   const keysFile = options.keysFile || KEYS_FILE;
   const service = options.service || process.env.MANA_KEYCHAIN_SERVICE || DEFAULT_SERVICE;
+  const listAccountsImpl = options.listAccounts || listKeychainAccounts;
   let store = {};
 
   loadStore();
 
   function loadStore() {
-    if (!fs.existsSync(keysFile)) return;
+    if (!fs.existsSync(keysFile)) { rebuildIfPossible(); return; }
     let data;
     try {
       data = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
@@ -31,6 +33,7 @@ function createKeyStore(options = {}) {
 
     if (isV2Metadata(data)) {
       store = loadKeysFromKeychain(data.providers, service);
+      if (!hasAnyKeys(store)) rebuildIfPossible();
       return;
     }
 
@@ -49,6 +52,33 @@ function createKeyStore(options = {}) {
 
     console.error('Failed to load keys: unsupported key store format');
     store = {};
+  }
+
+  // 自愈重建：升级整包替换可能丢掉 .keys.json（v0.2.10/0.2.11 的安装器没有搬运逻辑），
+  // 但 Keychain 密钥本体（account = "providerId:keyId"）不随 bundle 走、不会丢。
+  // 索引为空时扫 Keychain 重建，用户无需重配 key。
+  function rebuildIfPossible() {
+    const accounts = listAccountsImpl(service);
+    const byProvider = {};
+    for (const acct of accounts) {
+      const i = acct.indexOf(':');
+      if (i <= 0) continue;
+      const pid = acct.slice(0, i), keyId = acct.slice(i + 1);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(keyId)) continue;
+      (byProvider[pid] = byProvider[pid] || []).push(keyId);
+    }
+    if (!Object.keys(byProvider).length) return;
+    const providers = Object.fromEntries(
+      Object.entries(byProvider).map(([pid, ids]) => [pid, Object.fromEntries(ids.map(id => [id, true]))]),
+    );
+    store = loadKeysFromKeychain(providers, service);
+    if (!hasAnyKeys(store)) return;
+    console.log(`Rebuilt key metadata from Keychain "${service}": ${Object.entries(store).map(([p, a]) => `${p}×${a.length}`).join(', ')}`);
+    saveMetadata();
+  }
+
+  function hasAnyKeys(s) {
+    return Object.values(s).some(arr => Array.isArray(arr) && arr.length > 0);
   }
 
   function saveMetadata() {
@@ -140,6 +170,23 @@ function loadKeysFromKeychain(providers, service) {
     }
   }
   return loaded;
+}
+
+function listKeychainAccounts(service) {
+  // dump-keychain 只输出条目属性、不读密码（不会触发授权弹窗）；按 class 块配对 svce/acct
+  try {
+    const login = path.join(os.homedir(), 'Library', 'Keychains', 'login.keychain-db');
+    const out = execFileSync(SECURITY_BIN, ['dump-keychain', login], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    const accounts = [];
+    for (const block of out.split(/\n(?=class:)/)) {
+      if (!block.includes(`"svce"<blob>="${service}"`)) continue;
+      const acct = (block.match(/"acct"<blob>="([^"]+)"/) || [])[1];
+      if (acct) accounts.push(acct);
+    }
+    return accounts;
+  } catch {
+    return [];
+  }
 }
 
 function writeKeychainKey(service, providerId, keyId, apiKey) {

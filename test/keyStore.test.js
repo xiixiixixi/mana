@@ -143,3 +143,30 @@ test('Ssec7 listKeys returns id, label, hint', {skip: !isDarwin}, () => {
   assert.equal(list[0].label, '账号 A');
   assert.equal(list[0].hint, 'sk-...5678');
 });
+
+// 自愈：升级整包替换丢 .keys.json（v0.2.10/0.2.11 安装器无搬运逻辑）后，
+// 密钥本体仍在 Keychain，索引应能按 pid:keyId 规则扫描重建，用户无需重配
+test('Ssec8 rebuilds metadata from Keychain when index file is lost', {skip: !isDarwin}, () => {
+  const {keysFile, service} = createFixture();
+  const storeA = createKeyStore({keysFile, service});
+  const e1 = storeA.addKey('s', 'deepseek', 'sk-recover-1111111', null);
+  const e2 = storeA.addKey('s', 'zhipu', 'sk-recover-2222222', null);
+  trackKeychainItem(service, `deepseek:${e1.id}`);
+  trackKeychainItem(service, `zhipu:${e2.id}`);
+
+  // 索引丢失：全新路径（文件不存在）+ 同一 Keychain service
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-keystore-'));
+  tempDirs.push(dir);
+  const lostFile = path.join(dir, '.keys.json');
+  const storeB = createKeyStore({keysFile: lostFile, service});
+
+  const status = storeB.status('s');
+  assert.equal(status.deepseek.length, 1, 'deepseek key should be recovered');
+  assert.equal(status.zhipu.length, 1, 'zhipu key should be recovered');
+  assert.equal(storeB.getKey('s', 'deepseek', status.deepseek[0].id).apiKey, 'sk-recover-1111111');
+
+  // 重建后的元数据应落盘（下次启动走正常路径）
+  const meta = JSON.parse(fs.readFileSync(lostFile, 'utf8'));
+  assert.equal(meta.providers.deepseek[status.deepseek[0].id], true);
+  assert.equal(meta.providers.zhipu[status.zhipu[0].id], true);
+});
