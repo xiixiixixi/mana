@@ -10,6 +10,8 @@ const { createKeysRouter } = require('./routes/keys');
 const { createLocalUsageRouter } = require('./routes/localUsage');
 const { createGithubAuthRouter } = require('./routes/githubAuth');
 const { createConfigRouter } = require('./routes/config');
+const { createUpdateRouter } = require('./routes/update');
+const { createUpdater } = require('./services/updater');
 const { createGithubOAuth } = require('./services/githubOAuth');
 
 async function createApp() {
@@ -20,6 +22,7 @@ async function createApp() {
   const cache = createCache();
   const localUsageService = createLocalUsageService();
   const githubOAuth = createGithubOAuth();
+  const updater = createUpdater();
   const providers = registerAll({ keyStore });
 
   // Middleware
@@ -51,6 +54,7 @@ async function createApp() {
   app.use('/api', createLocalUsageRouter(localUsageService));
   app.use('/api', createGithubAuthRouter(githubOAuth, keyStore, cache));
   app.use('/api', createConfigRouter());
+  app.use('/api', createUpdateRouter(updater));
 
   // Static files
   app.use(express.static(path.join(__dirname, '..', 'client')));

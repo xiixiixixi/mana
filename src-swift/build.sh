@@ -96,6 +96,13 @@ else
     cp "$PROJECT_ROOT/.config.json" "$RES_DIR/" 2>/dev/null || true
 fi
 
+# 版本号唯一来源 package.json：写入 Resources/version（自更新用，Node/Swift 读）
+# + Info.plist 两个版本键（Finder 显示）
+APP_VERSION="$(node -p "require('$PROJECT_ROOT/package.json').version")"
+echo "$APP_VERSION" > "$RES_DIR/version"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" -c "Set :CFBundleVersion $APP_VERSION" "$APP_BUNDLE/Contents/Info.plist"
+echo "Version: $APP_VERSION"
+
 # 5. Install production deps
 cp "$PROJECT_ROOT/package.json" "$RES_DIR/"
 (cd "$RES_DIR" && npm install --omit=dev --ignore-scripts 2>&1 | tail -1)

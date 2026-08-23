@@ -37,6 +37,11 @@ h1{font-size:14px;font-weight:700;letter-spacing:.18em;text-transform:uppercase}
 .pref select,.pref input[type=number]{padding:4px 8px;border:1px solid var(--border);font-family:inherit;font-size:11px;background:var(--bg);outline:none;width:100%}
 .pref select:focus,.pref input:focus{border-color:var(--ink)}
 .pref-actions{display:flex;gap:6px;margin-top:4px}
+.upd-status{font-size:10px;color:var(--gray);margin-top:6px;line-height:1.8;word-break:break-all}
+.upd-status .err{color:var(--accent);font-weight:700}
+.upd-bar{display:inline-flex;gap:2px;height:9px;vertical-align:middle;margin-left:8px}
+.upd-bar b{width:10px;background:var(--border);border-radius:1px}
+.upd-bar b.on{background:var(--ink)}
 .toggle{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
 .toggle input{accent-color:var(--ink);width:14px;height:14px}
 /* OAuth */
@@ -56,7 +61,7 @@ h1{font-size:14px;font-weight:700;letter-spacing:.18em;text-transform:uppercase}
 <script>
 (function(){
 var $=function(id){return document.getElementById(id)};
-var providers=[],keyStatus={},oauthTimers={},config=null;
+var providers=[],keyStatus={},oauthTimers={},config=null,upd=null;
 function toast(m,ok){var t=$('toast');t.textContent=m;t.className='toast toast-'+(ok?'ok':'err');t.style.display='block';setTimeout(function(){t.style.display='none'},2500)}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 
@@ -65,6 +70,7 @@ async function load(){
     var p=await fetch('/api/providers');providers=(await p.json()).providers||[];
     var k=await fetch('/api/keys/status');keyStatus=await k.json();
     try{var c=await fetch('/api/config');config=await c.json()}catch(e){config=null}
+    try{var u=await fetch('/api/update/status');upd=await u.json()}catch(e){upd=null}
     render();
   }catch(e){$('list').innerHTML='<div class="empty">Failed to load</div>'}
 }
@@ -89,6 +95,31 @@ window.savePrefs=async function(){
   if(r.ok){config=await r.json();toast('Saved',true);notifyMain()}else{toast('Failed',false)}
 };
 window.testNotify=function(){window.location='mana://notify-test'};
+
+// 自更新（安装在 Swift 壳；本页只做检查展示与手动触发，进度由 Swift 经 __updProgress 推回）
+window.checkUpdate=async function(){
+  var s=$('upd-status');if(s)s.textContent='checking…';
+  try{upd=await (await fetch('/api/update/check')).json()}catch(e){upd={error:'network'}}
+  render();
+};
+window.doUpdate=function(){
+  if(!upd||!upd.dmgUrl)return;
+  window.location='mana://update?url='+encodeURIComponent(upd.dmgUrl)+'&ver='+encodeURIComponent(upd.latest||'');
+  window.__updProgress(0);
+};
+window.saveUpdAuto=async function(){
+  var v=document.getElementById('pref-updauto').checked;
+  var r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({update:{auto:v}})});
+  if(r.ok){config=await r.json();toast(v?'auto update on':'auto update off',true)}else{toast('Failed',false)}
+};
+window.__updProgress=function(p,err){
+  var s=$('upd-status');if(!s)return;
+  if(p<0){s.innerHTML='<span class="err">[err] '+(err||'升级失败')+'</span>';return}
+  var n=Math.max(0,Math.min(10,Math.round(p/10)));
+  var bar='<span class="upd-bar">';for(var i=0;i<10;i++)bar+='<b'+(i<n?' class="on"':'')+'></b>';bar+='</span>';
+  s.innerHTML='下载中 '+p+'%'+bar;
+  var b=$('upd-go');if(b){b.disabled=true;b.textContent='upgrading…'}
+};
 
 // GitHub Copilot OAuth
 window.githubAuth=async function(){var id='github-copilot';var box=document.getElementById('oauth-'+id);var btn=document.getElementById('gh-btn');
@@ -133,8 +164,33 @@ function prefsHtml(){
   return h;
 }
 
+function updStatusHtml(){
+  if(!upd)return '未检查';
+  if(upd.error)return '<span class="err">[err] '+esc(upd.error)+'</span>';
+  if(upd.hasUpdate)return '有新版本 v'+esc(upd.latest)+'（当前 v'+esc(upd.current)+'）· 资产 '+esc(upd.dmgUrl&&upd.dmgUrl.split('/').pop()||'');
+  if(upd.latest)return '已是最新（v'+esc(upd.latest)+'）';
+  return '未检查';
+}
+function updateHtml(){
+  var autoOn=!config||!config.update||config.update.auto!==false;
+  var cur=upd&&upd.current?upd.current:'…';
+  var h='<div class="sec-title">UPDATE</div>';
+  h+='<div class="row"><div class="pref">';
+  h+='<label>当前版本</label><span>v'+esc(cur)+(cur==='dev'?' · dev':'')+'</span>';
+  h+='<label>最新版本</label><span>'+(upd&&upd.latest?'v'+esc(upd.latest):'—')+'</span>';
+  h+='<label>自动升级</label><span class="toggle"><input type="checkbox" id="pref-updauto" onchange="saveUpdAuto()"'+(autoOn?' checked':'')+'><span>发现新版本自动下载替换重启</span></span>';
+  h+='</div>';
+  h+='<div class="upd-status" id="upd-status">'+updStatusHtml()+'</div>';
+  h+='<div class="pref-actions"><button class="btn" onclick="checkUpdate()">check</button>';
+  if(upd&&upd.hasUpdate&&upd.dmgUrl)h+='<button class="btn btn-primary" id="upd-go" onclick="doUpdate()">upgrade → v'+esc(upd.latest)+'</button>';
+  if(upd&&upd.releaseUrl)h+='<button class="btn" onclick="window.location=\'mana://open?url=\'+encodeURIComponent(upd.releaseUrl)">release ↗</button>';
+  h+='</div></div>';
+  return h;
+}
+
 function render(){
   var h=prefsHtml();
+  h+=updateHtml();
   h+='<div class="sec-title">PROVIDERS · API KEYS</div>';
   providers.forEach(function(p){
     var keys=keyStatus[p.id]||[],auto=p.apiType==='oauth'||p.apiType==='local';

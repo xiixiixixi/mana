@@ -27,6 +27,7 @@ struct AppConfig {
     var balanceWarn = 2.0
     var menubarMode = 2
     var attentionPct = 80.0
+    var updateAuto = true
 
     static func load() -> AppConfig {
         var c = AppConfig()
@@ -41,6 +42,9 @@ struct AppConfig {
         if let u = j["ui"] as? [String: Any] {
             if let v = u["menubarMode"] as? Double { c.menubarMode = Int(v) }
             if let v = u["attentionPct"] as? Double { c.attentionPct = v }
+        }
+        if let u = j["update"] as? [String: Any] {
+            if let v = u["auto"] as? Bool { c.updateAuto = v }
         }
         return c
     }
@@ -215,6 +219,14 @@ class Nav: NSObject, WKNavigationDelegate, WKUIDelegate {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(t, forType: .string)
             }
+            if host == "update" {
+                var dmgURL: URL? = nil; var ver = ""
+                for pair in qs.split(separator: "&") {
+                    if pair.hasPrefix("url="), let u = String(pair.dropFirst(4)).removingPercentEncoding, let url = URL(string: u) { dmgURL = url }
+                    if pair.hasPrefix("ver=") { ver = String(pair.dropFirst(4)).removingPercentEncoding ?? "" }
+                }
+                if let u = dmgURL { installUpdate(from: u, latest: ver) }
+            }
             decisionHandler(.cancel); return
         }
         // Open external links in default browser
@@ -281,6 +293,7 @@ func startRefresh() {
     }
 }
 func refresh() {
+    checkForUpdate()
     guard let url = apiURL("/api/usage") else { return }
     URLSession.shared.dataTask(with: url) { d, _, e in
         guard let d = d, e == nil, let j = try? JSONSerialization.jsonObject(with: d) as? [String:Any],
@@ -420,6 +433,165 @@ private func checkNotificationsAuthorized(_ checks: [(name: String, label: Strin
     if changed { UserDefaults.standard.set(snap, forKey: snapKey) }
 }
 
+// MARK: - Self Update（监控本仓库 Release：Swift 负责下载 → 挂载 → 原地替换 → 重启）
+// 检查在 Node（/api/update/status，undici 走系统代理，10min 缓存）；本段只做安装。
+// 自动升级仅限 /Applications 下的正式安装（防止 dev/build 副本被悄悄换掉）；
+// 手动升级（settings 按钮 → mana://update）允许任意可写位置，含 build 目录便于自测。
+let updateQueue = DispatchQueue(label: "mana.selfupdate")
+var updating = false
+
+func currentVersionString() -> String? {
+    let u = URL(fileURLWithPath: Bundle.main.resourcePath!).appendingPathComponent("version")
+    guard let s = try? String(contentsOfFile: u.path, encoding: .utf8) else { return nil }
+    let v = s.trimmingCharacters(in: .whitespacesAndNewlines)
+    return v.isEmpty ? nil : v
+}
+func versionLess(_ a: String, _ b: String) -> Bool {
+    let parts = { (s: String) -> [Int] in s.replacingOccurrences(of: "v", with: "").split(separator: ".").map { Int($0) ?? 0 } }
+    let x = parts(a), y = parts(b)
+    for i in 0..<max(x.count, y.count) {
+        let l = i < x.count ? x[i] : 0, r = i < y.count ? y[i] : 0
+        if l != r { return l < r }
+    }
+    return false
+}
+
+func checkForUpdate() {
+    guard !updating, let url = apiURL("/api/update/status") else { return }
+    URLSession.shared.dataTask(with: url) { d, _, e in
+        guard e == nil, let d = d, let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              j["hasUpdate"] as? Bool == true,
+              let latest = j["latest"] as? String,
+              let dmg = j["dmgUrl"] as? String,
+              let dmgURL = URL(string: dmg) else { return }
+        let cfg = AppConfig.load()
+        let tag = "v" + latest
+        let ud = UserDefaults.standard
+        let now = Date().timeIntervalSince1970
+        // 同一 tag 只自动升一次；失败 6 小时后再重试，避免坏版本打转
+        if tag == ud.string(forKey: "tln.updTriedTag") { guard now > ud.double(forKey: "tln.updRetryAt") else { return } }
+        guard cfg.updateAuto, Bundle.main.bundlePath.hasPrefix("/Applications/") else { return }
+        ud.set(tag, forKey: "tln.updTriedTag")
+        ud.set(now + 6 * 3600, forKey: "tln.updRetryAt")
+        postNotification(title: "Mana 升级", body: "发现新版本 \(tag)，正在后台下载并升级…")
+        installUpdate(from: dmgURL, latest: latest)
+    }.resume()
+}
+
+final class UpdDownload: NSObject, URLSessionDownloadDelegate {
+    let dest: URL
+    let onProgress: (Double) -> Void
+    let onDone: (URL?, String?) -> Void
+    private var finished = false
+    init(dest: URL, onProgress: @escaping (Double) -> Void, onDone: @escaping (URL?, String?) -> Void) {
+        self.dest = dest; self.onProgress = onProgress; self.onDone = onDone
+    }
+    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        if totalBytesExpectedToWrite > 0 { onProgress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)) }
+    }
+    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        finished = true
+        try? FileManager.default.removeItem(at: dest)
+        do { try FileManager.default.moveItem(at: location, to: dest); onDone(dest, nil) }
+        catch { onDone(nil, error.localizedDescription) }
+    }
+    func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if !finished, let error = error { finished = true; onDone(nil, error.localizedDescription) }
+    }
+}
+
+func installUpdate(from url: URL, latest: String) {
+    updateQueue.async {
+        guard !updating else { return }
+        updating = true
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mana-update", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dmg = dir.appendingPathComponent("Mana-\(latest.isEmpty ? "latest" : latest).dmg")
+        pushUpdateProgress(0)
+        let dl = UpdDownload(dest: dmg,
+            onProgress: { pushUpdateProgress($0) },
+            onDone: { file, err in
+                updateQueue.async {
+                    guard let file = file else { failUpdate(err ?? "下载失败"); return }
+                    swapIn(dmg: file, latest: latest)
+                }
+            })
+        URLSession(configuration: .ephemeral, delegate: dl, delegateQueue: nil).downloadTask(with: url).resume()
+    }
+}
+
+func swapIn(dmg: URL, latest: String) {
+    let fm = FileManager.default
+    let mount = FileManager.default.temporaryDirectory.appendingPathComponent("mana-update/mnt", isDirectory: true)
+    try? fm.removeItem(at: mount)
+    let att = runCmd("/usr/bin/hdiutil", ["attach", "-nobrowse", "-readonly", "-mountpoint", mount.path, dmg.path])
+    guard att.ok else { failUpdate("挂载 DMG 失败：\(att.err)"); return }
+    defer { _ = runCmd("/usr/bin/hdiutil", ["detach", mount.path, "-force"]) }
+    let srcApp = mount.appendingPathComponent("Mana.app", isDirectory: true)
+    guard fm.fileExists(atPath: srcApp.path) else { failUpdate("DMG 内未找到 Mana.app"); return }
+    // 版本校验：防降级/防误装
+    if let cur = currentVersionString(), cur != "dev", !latest.isEmpty, !versionLess(cur, latest) {
+        failUpdate("新版本号异常（v\(latest) 不高于 v\(cur)），已中止"); return
+    }
+    let dest = Bundle.main.bundleURL
+    guard fm.isWritableFile(atPath: dest.deletingLastPathComponent().path) else {
+        updating = false
+        postNotification(title: "Mana 升级", body: "无写入权限，请手动下载：github.com/xiixiixixi/mana/releases")
+        return
+    }
+    // 原地替换：旧包改名保底 → 拷入新包 → 失败回滚
+    let old = dest.deletingLastPathComponent().appendingPathComponent("Mana.old.\(Int(Date().timeIntervalSince1970))")
+    do {
+        try fm.moveItem(at: dest, to: old)
+        do { try fm.copyItem(at: srcApp, to: dest) }
+        catch {
+            try? fm.moveItem(at: old, to: dest)
+            failUpdate("替换失败：\(error.localizedDescription)"); return
+        }
+    } catch { failUpdate("移动旧版本失败：\(error.localizedDescription)"); return }
+    // ad-hoc 签名无公证：剥离 quarantine，升级后免"右键打开"
+    _ = runCmd("/usr/bin/xattr", ["-rd", "com.apple.quarantine", dest.path])
+    // 旧包进废纸篓（运行中的二进制走 inode，不受影响）
+    NSWorkspace.shared.recycle([old], completionHandler: nil)
+    // 看门 shell：等本进程退出后再 open 新包（open 两次兜底启动竞态）
+    let sh = Process()
+    sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+    sh.arguments = ["-c", "sleep 2; open \"\(dest.path)\"; sleep 3; open \"\(dest.path)\""]
+    try? sh.run()
+    postNotification(title: "Mana 已升级到 v\(latest.isEmpty ? "?" : latest)", body: "正在重启…")
+    DispatchQueue.main.async { NSApp.terminate(nil) }
+}
+
+func failUpdate(_ msg: String) {
+    updating = false
+    postNotification(title: "Mana 升级失败", body: msg)
+    DispatchQueue.main.async {
+        (settingsWindow?.contentView as? WKWebView)?.evaluateJavaScript("window.__updProgress&&window.__updProgress(-1,\(jsString(msg)))", completionHandler: nil)
+    }
+}
+func pushUpdateProgress(_ p: Double) {
+    let pct = Int(max(0, min(1, p)) * 100)
+    DispatchQueue.main.async {
+        (settingsWindow?.contentView as? WKWebView)?.evaluateJavaScript("window.__updProgress&&window.__updProgress(\(pct))", completionHandler: nil)
+    }
+}
+func runCmd(_ path: String, _ args: [String]) -> (ok: Bool, err: String) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: path)
+    p.arguments = args
+    let errPipe = Pipe()
+    p.standardError = errPipe
+    p.standardOutput = Pipe()
+    do {
+        try p.run(); p.waitUntilExit()
+        let out = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return (p.terminationStatus == 0, out.trimmingCharacters(in: .whitespacesAndNewlines))
+    } catch { return (false, error.localizedDescription) }
+}
+func jsString(_ s: String) -> String {
+    "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\n", with: "\\n") + "\""
+}
+
 // MARK: - App Delegate
 class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     static let shared = AppDelegate()
@@ -448,6 +620,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             let pauseItem = NSMenuItem(title: paused ? "恢复通知" : "暂停通知 1 小时", action: #selector(togglePause), keyEquivalent: "")
             pauseItem.target = AppDelegate.shared
             menu.addItem(pauseItem)
+            let updItem = NSMenuItem(title: "检查更新", action: #selector(openSettingsForUpdate), keyEquivalent: "")
+            updItem.target = AppDelegate.shared
+            menu.addItem(updItem)
             menu.addItem(NSMenuItem.separator())
             menu.addItem(NSMenuItem(title: "Quit Mana", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
             if let b = statusItem.button { NSMenu.popUpContextMenu(menu, with: e, for: b) }
@@ -463,6 +638,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             d.set(Date().timeIntervalSince1970 + 3600, forKey: "tln.pauseUntil")
         }
     }
+    @objc func openSettingsForUpdate() { showSettings() }
 }
     func show() { if let b = statusItem.button { mainPopover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY) } }
 app.delegate = AppDelegate.shared

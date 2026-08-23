@@ -64,7 +64,7 @@ footer{position:sticky;bottom:0;background:var(--bg);padding:8px 16px;border-top
 </header>
 <div class="status-bar"><span class="st na" id="dot">[--]</span><span id="statusText">loading…</span><span class="legend">剩% · 重置</span></div>
 <div class="list" id="list"><div class="empty"><div class="empty-num">—</div><div class="empty-text">loading…</div></div></div>
-<footer><span id="footerLeft">Mana</span><span>local · keychain</span></footer>
+<footer><span id="footerLeft">Mana</span><span id="footerRight">local · keychain</span></footer>
 <script>
 (function(){
 var $=function(id){return document.getElementById(id)};
@@ -189,6 +189,10 @@ function render(){
 }
 window.openExt=function(u){window.location='mana://open?url='+u};
 function refresh(){
+  fetch('/api/update/status').then(function(r){return r.json()}).then(function(u){
+    if(!u||!u.current||u.current==='dev')return;
+    $('footerRight').textContent=u.hasUpdate?('v'+u.current+' · [upd] v'+u.latest):('v'+u.current);
+  }).catch(function(){});
   if(window.__USAGE__){data=window.__USAGE__.providers||window.__USAGE__||[];keyStatus=window.__KEYS__||{};render();return}
   Promise.all([
     fetch('/api/usage').then(function(r){return r.json()}),

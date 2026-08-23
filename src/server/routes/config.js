@@ -13,8 +13,11 @@ const DEFAULTS = {
     // 暂停状态只在 Swift 端 UserDefaults（tln.pauseUntil），避免双端写文件竞争
   },
   ui: {
-    menubarMode: 2,       // 1=仅图标 2=名字+剩余% 3=名字+块条
+    menubarMode: 2,       // 菜单栏 1=仅图标 2=名字+剩余% 3=名字+块条
     attentionPct: 80,     // 菜单栏注意力阈值：剩余低于此值的平台才常驻菜单栏（刘海屏空间有限）
+  },
+  update: {
+    auto: true,           // 自动升级：发现新 Release 自动下载替换重启（仅 /Applications 下的安装）
   },
 };
 
@@ -24,6 +27,7 @@ function readConfig() {
     return {
       notify: { ...DEFAULTS.notify, ...(raw.notify || {}) },
       ui: { ...DEFAULTS.ui, ...(raw.ui || {}) },
+      update: { ...DEFAULTS.update, ...(raw.update || {}) },
     };
   } catch {
     return JSON.parse(JSON.stringify(DEFAULTS));
@@ -46,6 +50,7 @@ function createConfigRouter() {
     const body = req.body || {};
     if (body.notify) cur.notify = { ...cur.notify, ...body.notify };
     if (body.ui) cur.ui = { ...cur.ui, ...body.ui };
+    if (body.update) cur.update = { ...cur.update, ...body.update };
     try {
       writeConfig(cur);
       res.json(cur);

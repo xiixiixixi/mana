@@ -11,6 +11,7 @@ services/
 ├── usageOrchestrator.js    One provider fetch: cache → cooldown → fetch → aggregate
 ├── localUsage.js           Local CLI usage scan (Claude JSONL + Codex/OpenCode SQLite)
 ├── modelPricing.js         USD per 1M tokens, prefix-match lookup
+├── updater.js              Self-update check: GitHub latest release (API → 302 redirect fallback)
 └── githubOAuth.js          GitHub Device Flow, client_id only
 ```
 
@@ -25,6 +26,7 @@ services/
 | Add a local usage source | `localUsage.js` `get()` | Add scan fn, push into `Promise.all`. `buildResult()` rolls daily+summary |
 | Change OAuth scope | `githubOAuth.js` `requestDeviceCode()` body | Currently empty `scope` |
 | Change session window | `localUsage.js` line 11 `SESSION_WINDOW_MS` | 5h. Drives currentSession + prediction |
+| Update check / rate-limit fallback | `updater.js` `createUpdater()` | API first (notes/asset metadata); on 403/429/network error falls back to `github.com/<repo>/releases/latest` 302 Location → tag, dmg url is deterministic `<repo>/releases/download/<tag>/Mana.dmg`. Install itself lives in Swift (`main.swift` SelfUpdate). Repo owner is `xiixiixixi` — git remote still points at pre-rename `xiexiixixi` (GitHub redirects) |
 
 ## CONVENTIONS
 

@@ -39,13 +39,14 @@ mana/  (repo root = project root)
 | Build DMG for distribution | `bash src-swift/build.sh` | Bundles node binary + 19 dylibs + server code + npm deps + AppIcon.icns |
 | Regenerate app icon | `cd src-swift && swift gen_icon.swift icons/icon-1024.png && iconutil -c icns icons/AppIcon.iconset -o icons/AppIcon.icns` | Block-bar motif (white/gray/orange rows on black) |
 | Multi-key per-provider | `src/server/routes/api.js` `collectUsage()` | Expands multi-key providers into per-key entries |
+| 自更新（auto upgrade） | `src/server/services/updater.js` + `routes/update.js`（检查）；`src-swift/main.swift` SelfUpdate 段（安装） | 查 GitHub latest release（API 403/限流时自动降级 `releases/latest` 302 跳转拿 tag，资产 URL 固定 `Mana.dmg`）；Swift 下载→hdiutil 挂载→版本校验→原地替换（旧包进废纸篓）→剥 quarantine→看门 shell 重启。自动升级仅 `/Applications/` 前缀；手动（settings UPDATE 区块 → `mana://update?url=&ver=`）不限位置。版本号唯一来源 package.json，build.sh 写入 `Resources/version` + Info.plist |
 | CLI | `src/cli.js`, `npm link` | `mana usage --json` / `summary` / `local` |
 
 ## CONVENTIONS
 
 - **Two runtimes**: Swift GUI spawns Node subprocess. Port `41119` hardcoded in both. Don't change one without the other.
 - **Bundled vs dev mode**: `startNode()` checks `Bundle.main.resourcePath` for bundled server.js. Dev mode falls back to `#filePath` source directory + system node.
-- **Custom URL scheme**: `mana://` for Swift-WebView IPC. Handlers: `mana://refresh`, `mana://settings`, `mana://open?url=`, `mana://copy?text=`, `mana://notify-test`. Settings WebView must have `navigationDelegate` + `uiDelegate` set.
+- **Custom URL scheme**: `mana://` for Swift-WebView IPC. Handlers: `mana://refresh`, `mana://settings`, `mana://open?url=`, `mana://copy?text=`, `mana://notify-test`, `mana://update?url=&ver=`. Settings WebView must have `navigationDelegate` + `uiDelegate` set.
 - **WKWebView limitations**: No `window.open()`. External URLs handled via `mana://open?url=` → `NSWorkspace.shared.open()`. `window.close()` requires `WKUIDelegate.webViewDidClose`.
 - **Proxy**: Node uses undici (doesn't read `HTTPS_PROXY`). `proxy.js` calls `networksetup -getsecurewebproxy` to detect macOS system proxy.
 - **Remaining semantics rule**: progress shown to users is ALWAYS "how much is left". Never reintroduce "used %" display.
