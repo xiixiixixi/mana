@@ -552,6 +552,18 @@ func swapIn(dmg: URL, latest: String) {
     } catch { failUpdate("移动旧版本失败：\(error.localizedDescription)"); return }
     // ad-hoc 签名无公证：剥离 quarantine，升级后免"右键打开"
     _ = runCmd("/usr/bin/xattr", ["-rd", "com.apple.quarantine", dest.path])
+    // 个人数据搬家：release DMG 是 DIST 构建（无 .keys.json/.config.json），
+    // Keychain 密钥本体不受影响，但 keyId 元数据/通知配置住在 bundle 里，必须带过去
+    for f in [".keys.json", ".config.json"] {
+        let srcF = old.appendingPathComponent("Contents/Resources/\(f)")
+        let dstF = dest.appendingPathComponent("Contents/Resources/\(f)")
+        if fm.fileExists(atPath: srcF.path) {
+            try? fm.removeItem(at: dstF)
+            try? fm.copyItem(at: srcF, to: dstF)
+        }
+    }
+    // 注入文件后重签（ad-hoc），避免资源封印问题
+    _ = runCmd("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", dest.path])
     // 看门 shell：等本进程退出后再 open 新包（open 两次兜底启动竞态），
     // 旧包清理放这里——NSWorkspace.recycle 在进程退出途中会静默失败（e2e 实测），
     // shell 比 app 活得久，rm -rf 可靠
