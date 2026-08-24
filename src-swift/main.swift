@@ -133,7 +133,7 @@ func applyMenubar(_ entries: [MenubarEntry]) {
             if let p = e.pct { return p < cfg.attentionPct }
             return false // 余额型/无限型不常驻菜单栏（告警走系统通知）
         }
-        // 平台长条可能因菜单栏空间不足被 macOS 隐藏；固定宽度的仪表锚点用警告图形兜底。
+        // 平台长条可能因菜单栏空间不足被 macOS 隐藏；固定宽度的仪表锚点用警示颜色兜底。
         applyItems(visible.sorted { ($0.pct ?? 100) < ($1.pct ?? 100) })
     }
 }

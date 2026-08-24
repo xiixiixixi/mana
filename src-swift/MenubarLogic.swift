@@ -9,13 +9,8 @@ enum MenubarAnchorState: Equatable {
     case warning
     case critical
 
-    var symbolName: String {
-        switch self {
-        case .normal: return "gauge"
-        case .warning: return "exclamationmark.triangle"
-        case .critical: return "exclamationmark.triangle.fill"
-        }
-    }
+    // Mana 的识别图形始终保持仪表盘；状态只通过颜色表达，避免警示时突然换图标。
+    var symbolName: String { "gauge" }
 }
 
 func anchorState(_ pcts: [Double], warnPct: Double, criticalPct: Double) -> MenubarAnchorState {
