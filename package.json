@@ -1,11 +1,11 @@
 {
   "name": "mana",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "private": true,
   "bin": { "mana": "./src/cli.js" },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test && bash test-swift/run.sh"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",

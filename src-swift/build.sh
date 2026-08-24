@@ -17,7 +17,7 @@ echo "Compiling Swift..."
 swiftc -o "$APP_BUNDLE/Contents/MacOS/$APP_NAME" \
     -framework Cocoa -framework WebKit \
     -target arm64-apple-macos13.0 -O \
-    "$SCRIPT_DIR/main.swift"
+    "$SCRIPT_DIR/MenubarLogic.swift" "$SCRIPT_DIR/main.swift"
 
 # 2. Copy Info.plist & icon
 cp "$SCRIPT_DIR/Info.plist" "$APP_BUNDLE/Contents/"

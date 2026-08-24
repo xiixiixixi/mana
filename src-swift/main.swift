@@ -67,6 +67,7 @@ if let button = statusItem.button {
         img.isTemplate = true
         img.size = NSSize(width: 15, height: 15)
         button.image = img
+        button.imagePosition = .imageOnly
     }
     button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold)
     button.target = AppDelegate.shared
@@ -102,18 +103,29 @@ func menubarColor(_ pct: Double?) -> NSColor {
     if p < 20 { return NSColor(red: 0.91, green: 0.70, blue: 0.03, alpha: 1) }
     return .labelColor
 }
-func blocksText(_ pct: Double) -> String {
-    let n = Int((pct / 10).rounded())
-    return String(repeating: "█", count: n) + String(repeating: "░", count: 10 - n)
-}
 func compactBalance(_ v: Double) -> String {
     if v >= 10000 { return String(format: "%.1fw", v / 10000) }
     if v >= 1000 { return String(format: "%.1fk", v / 1000) }
     return String(format: "%.0f", v)
 }
+func applyAnchorAlert(_ entries: [MenubarEntry], config: AppConfig) {
+    guard let button = statusItem.button else { return }
+    let pcts = entries.compactMap(\.pct).filter(\.isFinite).map { min(max($0, 0), 100) }
+    let state = anchorState(pcts, warnPct: config.warnPct, criticalPct: config.criticalPct)
+    if let image = NSImage(systemSymbolName: state.symbolName, accessibilityDescription: "Mana") {
+        image.isTemplate = true
+        image.size = NSSize(width: 15, height: 15)
+        button.image = image
+    }
+    button.imagePosition = .imageOnly
+    button.attributedTitle = NSAttributedString(string: "")
+    button.contentTintColor = state == .critical ? .systemRed : state == .warning ? .systemYellow : .labelColor
+    button.toolTip = pcts.min().map { "Mana · 最低剩余 \(Int($0))%" } ?? "Mana"
+}
 func applyMenubar(_ entries: [MenubarEntry]) {
     DispatchQueue.main.async {
         let cfg = AppConfig.load()
+        applyAnchorAlert(entries, config: cfg)
         if cfg.menubarMode == 1 { applyItems([]); return }
         // 注意力模式：刘海屏菜单栏空间极其有限（溢出项会被系统藏到刘海后），
         // 只有剩余低于 attentionPct 的平台才占一个菜单栏位；健康平台在 popover 看全貌
@@ -121,6 +133,7 @@ func applyMenubar(_ entries: [MenubarEntry]) {
             if let p = e.pct { return p < cfg.attentionPct }
             return false // 余额型/无限型不常驻菜单栏（告警走系统通知）
         }
+        // 平台长条可能因菜单栏空间不足被 macOS 隐藏；固定宽度的仪表锚点用警告图形兜底。
         applyItems(visible.sorted { ($0.pct ?? 100) < ($1.pct ?? 100) })
     }
 }
