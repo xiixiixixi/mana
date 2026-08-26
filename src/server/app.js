@@ -13,6 +13,7 @@ const { createConfigRouter } = require('./routes/config');
 const { createUpdateRouter } = require('./routes/update');
 const { createUpdater } = require('./services/updater');
 const { createGithubOAuth } = require('./services/githubOAuth');
+const { refreshProxy } = require('./proxy');
 
 async function createApp() {
   const app = express();
@@ -22,8 +23,8 @@ async function createApp() {
   const cache = createCache();
   const localUsageService = createLocalUsageService();
   const githubOAuth = createGithubOAuth();
-  const updater = createUpdater();
-  const providers = registerAll({ keyStore });
+  const updater = createUpdater({ refreshProxyImpl: refreshProxy });
+  const providers = registerAll({ keyStore, refreshProxy });
 
   // Middleware
   app.use(cookieParser());

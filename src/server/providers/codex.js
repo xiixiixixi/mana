@@ -1,15 +1,15 @@
 const { BaseProvider } = require('./base');
 const { formatResetAt } = require('./common');
-const { execSync } = require('child_process');
+const { execSync, spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
 // 数据来源（按优先级）:
-// 1. Codex OAuth usage API（账号级实时配额；本网络下 chatgpt.com 可能被 Cloudflare 拦，
-//    失败自动回退 2）——token 从 ~/.codex/auth.json 读取，过期用 refresh_token 刷新并回写
-// 2. ~/.codex/sessions/**/rollout-*.jsonl 最后一条 rate_limits（本地 CLI 快照，可能滞后）
-// 3. ~/.codex/state_5.sqlite — 累计 token
+// 1. 本机 Codex app-server 的 account/rateLimits/read（跟随当前客户端协议与登录态）
+// 2. Codex OAuth usage API（兼容不支持 app-server 的旧客户端）
+// 3. ~/.codex/sessions/**/rollout-*.jsonl 最后一条 rate_limits（本地 CLI 快照，可能滞后）
+// 4. ~/.codex/state_5.sqlite — 累计 token
 
 const CODEX_AUTH = path.join(os.homedir(), '.codex', 'auth.json');
 const CODEX_REFRESH_ENDPOINT = 'https://auth.openai.com/oauth/token';
@@ -18,6 +18,129 @@ const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/codex/usage';
 // 最近一次成功的实时配额落盘处（只存用量数字，绝不存 token）。重启后冷启动若首个
 // 实时请求被拦，用它兜底而不是闪回可能很旧的本地 rollout 快照。
 const CODEX_LAST_GOOD = path.join(os.homedir(), '.local', 'share', 'mana', 'codex-usage.json');
+const APP_SERVER_TIMEOUT_MS = 12_000;
+
+function findCodexBinary({ env = process.env, accessImpl = fs.accessSync } = {}) {
+  const pathCandidates = String(env.PATH || '').split(path.delimiter).filter(Boolean).map(p => path.join(p, 'codex'));
+  const candidates = [
+    env.CODEX_BINARY,
+    '/Applications/ChatGPT.app/Contents/Resources/codex',
+    '/Applications/Codex.app/Contents/Resources/codex',
+    '/opt/homebrew/bin/codex',
+    '/usr/local/bin/codex',
+    path.join(os.homedir(), '.local', 'bin', 'codex'),
+    ...pathCandidates,
+  ].filter(Boolean);
+  for (const candidate of [...new Set(candidates)]) {
+    try {
+      accessImpl(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+function normalizeAppServerUsage(result) {
+  const snapshot = result?.rateLimitsByLimitId?.codex || result?.rateLimits;
+  if (!snapshot) throw new Error('Codex app-server returned no rate limits');
+  const mapWindow = window => window ? {
+    used_percent: Number(window.usedPercent) || 0,
+    limit_window_seconds: window.windowDurationMins == null ? null : Number(window.windowDurationMins) * 60,
+    reset_at: window.resetsAt == null ? null : Number(window.resetsAt),
+  } : null;
+  const primary = mapWindow(snapshot.primary);
+  const secondary = mapWindow(snapshot.secondary);
+  if (!primary && !secondary) throw new Error('Codex app-server returned empty rate limits');
+  return {
+    plan_type: snapshot.planType || 'Codex',
+    rate_limit: { primary_window: primary, secondary_window: secondary },
+  };
+}
+
+async function fetchCodexAppServerUsage({
+  binary = findCodexBinary(),
+  spawnImpl = spawn,
+  refreshProxyImpl = () => {},
+  timeoutMs = APP_SERVER_TIMEOUT_MS,
+} = {}) {
+  if (!binary) {
+    const err = new Error('Codex app-server not found');
+    err.code = 'CODEX_APP_SERVER_MISSING';
+    throw err;
+  }
+
+  const proxyState = await refreshProxyImpl();
+  const childEnv = { ...process.env };
+  if (proxyState?.url && !childEnv.HTTPS_PROXY && !childEnv.https_proxy) {
+    childEnv.HTTPS_PROXY = proxyState.url;
+    childEnv.HTTP_PROXY = proxyState.url;
+  }
+
+  return await new Promise((resolve, reject) => {
+    const child = spawnImpl(binary, ['app-server', '--stdio'], {
+      env: childEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    let settled = false;
+    let requestedRateLimits = false;
+    const timer = setTimeout(() => finish(new Error('Codex app-server timed out')), timeoutMs);
+
+    function send(message) {
+      if (settled || child.stdin.destroyed) return;
+      try { child.stdin.write(`${JSON.stringify(message)}\n`); }
+      catch (err) { finish(err); }
+    }
+
+    function finish(err, usage) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { child.stdin.end(); } catch {}
+      try { child.kill('SIGTERM'); } catch {}
+      if (err) reject(err);
+      else resolve(usage);
+    }
+
+    child.on('error', finish);
+    child.stdin.on('error', finish);
+    child.on('exit', code => {
+      if (!settled) finish(new Error(`Codex app-server exited ${code}: ${stderrBuffer.trim().slice(0, 300)}`));
+    });
+    child.stderr.on('data', chunk => {
+      stderrBuffer = (stderrBuffer + chunk.toString()).slice(-1000);
+    });
+    child.stdout.on('data', chunk => {
+      stdoutBuffer += chunk.toString();
+      const lines = stdoutBuffer.split('\n');
+      stdoutBuffer = lines.pop() || '';
+      for (const line of lines) {
+        let message;
+        try { message = JSON.parse(line); } catch { continue; }
+        if (message.id === 1 && message.result && !requestedRateLimits) {
+          requestedRateLimits = true;
+          send({ method: 'initialized' });
+          send({ id: 2, method: 'account/rateLimits/read', params: null });
+        } else if (message.id === 2) {
+          if (message.error) {
+            finish(new Error(`Codex app-server: ${message.error.message || 'rate limit request failed'}`));
+          } else {
+            try { finish(null, normalizeAppServerUsage(message.result)); }
+            catch (err) { finish(err); }
+          }
+        }
+      }
+    });
+
+    send({
+      id: 1,
+      method: 'initialize',
+      params: { clientInfo: { name: 'mana', version: '0.2.16' } },
+    });
+  });
+}
 
 function saveLastGoodUsage(usage) {
   try {
@@ -34,9 +157,9 @@ function loadLastGoodUsage() {
   return null;
 }
 
-async function readCodexTokens() {
+async function readCodexTokens(authFile = CODEX_AUTH) {
   try {
-    const a = JSON.parse(fs.readFileSync(CODEX_AUTH, 'utf8'));
+    const a = JSON.parse(fs.readFileSync(authFile, 'utf8'));
     if (a.tokens?.access_token) {
       return { access_token: a.tokens.access_token, refresh_token: a.tokens.refresh_token, account_id: a.account_id || a.tokens.account_id || null };
     }
@@ -45,8 +168,8 @@ async function readCodexTokens() {
 }
 
 // 刷新并回写（refresh_token 单次使用，必须立即持久化新令牌，否则会把 codex CLI 的登录搞坏）
-async function refreshCodexTokens(refreshToken) {
-  const res = await fetch(CODEX_REFRESH_ENDPOINT, {
+async function refreshCodexTokens(refreshToken, { fetchImpl = fetch, authFile = CODEX_AUTH } = {}) {
+  const res = await fetchImpl(CODEX_REFRESH_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ client_id: CODEX_CLIENT_ID, grant_type: 'refresh_token', refresh_token: refreshToken, scope: 'openid profile email' }),
@@ -55,25 +178,36 @@ async function refreshCodexTokens(refreshToken) {
   if (!res.ok) throw new Error(`refresh HTTP ${res.status}`);
   const t = await res.json();
   try {
-    const a = JSON.parse(fs.readFileSync(CODEX_AUTH, 'utf8'));
+    const a = JSON.parse(fs.readFileSync(authFile, 'utf8'));
     a.tokens.access_token = t.access_token;
     if (t.refresh_token) a.tokens.refresh_token = t.refresh_token;
     if (t.id_token) a.tokens.id_token = t.id_token;
     if (t.account_id) a.tokens.account_id = t.account_id;
     a.last_refresh = new Date().toISOString();
-    fs.writeFileSync(CODEX_AUTH, JSON.stringify(a, null, 2));
+    fs.writeFileSync(authFile, JSON.stringify(a, null, 2));
   } catch {}
   return { access_token: t.access_token, account_id: t.account_id || null };
 }
 
-// 返回 {rate_limit, plan_type} 或 null（网络/风控不可达时）
-async function fetchCodexOAuthUsage() {
-  let tok = await readCodexTokens();
-  if (!tok) return null;
-  const call = (token) => fetch(CODEX_USAGE_URL, {
+// 返回账号级实时配额。失败时抛出具体原因，由 provider 明确标记回退数据，避免用户把
+// “刚刷新过界面”误认为“实时配额也是刚更新的”。
+async function fetchCodexOAuthUsage({
+  fetchImpl = fetch,
+  authFile = CODEX_AUTH,
+  readTokensImpl = () => readCodexTokens(authFile),
+  refreshProxyImpl = () => {},
+} = {}) {
+  let tok = await readTokensImpl();
+  if (!tok) {
+    const err = new Error('Codex login not found');
+    err.code = 'CODEX_AUTH_MISSING';
+    throw err;
+  }
+  await refreshProxyImpl();
+  const call = (token) => fetchImpl(CODEX_USAGE_URL, {
     headers: {
       'Authorization': `Bearer ${token}`,
-      'User-Agent': 'codex_cli_rs/0.55.0 (Mac OS 15.0; arm64) unknown (unknown)',
+      'User-Agent': 'codex_cli_rs/0.150.0 (Mac OS; arm64)',
       'originator': 'codex_cli_rs',
       'Accept': 'application/json',
       ...(tok.account_id ? { 'ChatGPT-Account-Id': String(tok.account_id) } : {}),
@@ -83,26 +217,41 @@ async function fetchCodexOAuthUsage() {
   let res = await call(tok.access_token);
   if (res.status === 401 || res.status === 403) {
     // token 过期 → 刷新后重试一次
-    if (!tok.refresh_token) return null;
-    const fresh = await refreshCodexTokens(tok.refresh_token);
+    if (!tok.refresh_token) throw new Error(`Codex usage HTTP ${res.status}`);
+    const fresh = await refreshCodexTokens(tok.refresh_token, { fetchImpl, authFile });
     if (fresh.account_id && !tok.account_id) tok.account_id = fresh.account_id;
     res = await call(fresh.access_token);
   }
-  if (!res.ok) return null; // 403=Cloudflare 拦截等，交给本地快照回退
+  if (!res.ok) throw new Error(`Codex usage HTTP ${res.status}`);
   return await res.json();
+}
+
+function describeLiveError(err, fallback = '本地快照') {
+  const message = String(err?.message || err || '');
+  let reason = '实时联网失败';
+  if (err?.code === 'CODEX_AUTH_MISSING') reason = '未找到 Codex 登录信息';
+  else if (/issuer certificate|self[- ]signed|certificate/i.test(message)) reason = '网络证书无法验证';
+  else if (/HTTP 401/.test(message)) reason = 'Codex 登录已失效';
+  else if (/HTTP 403/.test(message)) reason = 'ChatGPT 拒绝访问，请检查代理';
+  else if (/HTTP 429/.test(message)) reason = '实时接口暂时繁忙';
+  else if (/timeout|timed out|aborted/i.test(message)) reason = '实时联网超时';
+  return `${reason}，当前显示${fallback}`;
 }
 
 class CodexProvider extends BaseProvider {
   // 最近一次成功的 OAuth 实时结果（内存级；重启后丢失去本地快照兜底）
   static lastOauth = null;
 
-  constructor() {
+  constructor(deps = {}) {
     super({
       id: 'codex', name: 'Codex', icon: 'CX',
       color: '#10a37f', colorDim: 'rgba(16,163,127,0.12)',
       consoleUrl: 'https://chatgpt.com/codex/usage',
       apiType: 'local', region: 'global', cacheTTL: 30,
-    });
+    }, deps);
+    this.fetchImpl = deps.fetchImpl || fetch;
+    this.refreshProxyImpl = deps.refreshProxy || (() => {});
+    this.fetchAppServerImpl = deps.fetchCodexAppServerUsage || fetchCodexAppServerUsage;
   }
 
   // 本机没有 ~/.codex（未装 Codex CLI）时整个平台不进首页
@@ -145,8 +294,21 @@ class CodexProvider extends BaseProvider {
   async fetchUsage() {
     const homeDir = os.homedir();
 
-    // 1. 优先 OAuth 实时配额
-    const oauth = await fetchCodexOAuthUsage().catch(() => null);
+    // 1. 优先让本机 Codex 客户端读取实时配额；旧客户端不支持时再走 OAuth 兼容路径。
+    let oauth = null;
+    let liveError = null;
+    try {
+      oauth = await this.fetchAppServerImpl({ refreshProxyImpl: this.refreshProxyImpl });
+    } catch {
+      try {
+        oauth = await fetchCodexOAuthUsage({
+          fetchImpl: this.fetchImpl,
+          refreshProxyImpl: this.refreshProxyImpl,
+        });
+      } catch (err) {
+        liveError = err;
+      }
+    }
     if (oauth?.rate_limit) {
       const quotas = this.buildWindowQuotas([
         oauth.rate_limit.primary_window,
@@ -172,11 +334,15 @@ class CodexProvider extends BaseProvider {
       ]);
       const at = new Date(last.at);
       const when = `${at.toLocaleDateString('zh-CN',{month:'numeric',day:'numeric'})} ${at.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}`;
-      return this.buildUsage({
-        status: 'active',
-        plan: `${last.usage.plan_type || 'Codex'} · 实时缓存 ${when}`,
-        quotas,
-      });
+      return {
+        ...this.buildUsage({
+          status: 'active',
+          plan: `${last.usage.plan_type || 'Codex'} · 实时缓存 ${when}`,
+          quotas,
+        }),
+        stale: true,
+        warning: describeLiveError(liveError, '上次实时缓存'),
+      };
     }
     const rateLimits = snapshot?.rateLimits;
     const staleNote = snapshot?.mtime
@@ -224,11 +390,15 @@ class CodexProvider extends BaseProvider {
       throw new Error('Codex 无数据');
     }
 
-    return this.buildUsage({
-      status: 'active',
-      plan: `ChatGPT ${plan.charAt(0).toUpperCase() + plan.slice(1)}`,
-      quotas,
-    });
+    return {
+      ...this.buildUsage({
+        status: 'active',
+        plan: `ChatGPT ${plan.charAt(0).toUpperCase() + plan.slice(1)}`,
+        quotas,
+      }),
+      stale: true,
+      warning: describeLiveError(liveError),
+    };
   }
 
   readLatestRateLimits(homeDir) {
@@ -293,4 +463,11 @@ class CodexProvider extends BaseProvider {
   validateKey() { return true; }
 }
 
-module.exports = { CodexProvider };
+module.exports = {
+  CodexProvider,
+  findCodexBinary,
+  normalizeAppServerUsage,
+  fetchCodexAppServerUsage,
+  fetchCodexOAuthUsage,
+  describeLiveError,
+};

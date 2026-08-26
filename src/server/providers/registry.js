@@ -11,7 +11,7 @@ const { GithubCopilotProvider } = require('./githubCopilot');
 
 function registerAll(deps = {}) {
   const providers = [
-    new CodexProvider(),
+    new CodexProvider(deps),
     new GrokProvider(),
     new GithubCopilotProvider(),
     new ZhipuProvider(),

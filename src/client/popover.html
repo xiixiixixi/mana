@@ -40,6 +40,7 @@ h1{font-size:12px;font-weight:700;letter-spacing:.28em;text-transform:uppercase;
 .qreset{font-size:10px;color:var(--gray);text-align:right;white-space:nowrap}
 .qreset.na{color:var(--border)}
 .card-error{font-size:10px;color:var(--accent);padding:4px 6px;background:var(--accent-dim);margin-top:6px;word-break:break-all}
+.card-warning{font-size:9px;color:var(--gray);padding-top:7px;margin-top:7px;border-top:1px dashed var(--border);word-break:break-all}
 /* 本地用量卡（仅 token，不含花费） */
 .local-card{background:var(--card);border:1px solid var(--border);padding:12px 14px}
 .local-title{font-size:10px;font-weight:700;letter-spacing:.2em;color:var(--muted);margin-bottom:7px}
@@ -182,6 +183,7 @@ function render(){
     });
     if(!(p.quotas||[]).length&&p.status!=='error')h+='<span class="qtrack">无额度数据</span><span></span><span class="qpct na">--</span><span class="qreset na">--</span>';
     h+='</div>';
+    if(p.warning)h+='<div class="card-warning">! '+esc(p.warning)+'</div>';
     if(p.status==='error'&&p.error)h+='<div class="card-error">'+esc(p.error)+'</div>';
     h+='</div>';
   });

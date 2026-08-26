@@ -274,7 +274,9 @@ func startNode() {
     // Bundled mode: everything in Resources/
     if FileManager.default.fileExists(atPath: bundledServer.path) {
         proc.executableURL = bundledNode
-        proc.arguments = [bundledServer.path]
+        // Node 默认只信任自己的内置证书列表；使用 macOS 系统证书后，其他机器上已被
+        // 系统信任的公司/代理根证书也能正常访问 GitHub 与 ChatGPT，仍保持严格校验。
+        proc.arguments = ["--use-system-ca", bundledServer.path]
         proc.currentDirectoryURL = resURL
         proc.standardOutput = nil; proc.standardError = nil
         do { try proc.run(); node = proc; print("[mana] node started (bundled)") }

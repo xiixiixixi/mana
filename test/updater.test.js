@@ -38,11 +38,14 @@ test('pickDmgAsset: first dmg, arm64 preferred, ignores non-dmg', () => {
 });
 
 test('check parses release, compares to current, returns dmg url', async () => {
+  let proxyRefreshes = 0;
   const upd = createUpdater({
     fetchImpl: async () => ({ ok: true, json: async () => RELEASE }),
     currentVersion: () => '0.2.9',
+    refreshProxyImpl: () => { proxyRefreshes++; },
   });
   const r = await upd.check({ force: true });
+  assert.equal(proxyRefreshes, 1);
   assert.equal(r.hasUpdate, true);
   assert.equal(r.latest, '9.9.9');
   assert.equal(r.current, '0.2.9');

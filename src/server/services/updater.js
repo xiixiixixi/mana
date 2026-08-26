@@ -43,11 +43,18 @@ function pickDmgAsset(assets) {
 
 async function defaultRequest(url, opts) { return request(url, opts); }
 
-function createUpdater({ fetchImpl = fetch, requestImpl = defaultRequest, currentVersion = readCurrentVersion } = {}) {
+function createUpdater({
+  fetchImpl = fetch,
+  requestImpl = defaultRequest,
+  currentVersion = readCurrentVersion,
+  refreshProxyImpl = () => {},
+} = {}) {
   let cache = null; // { result, at }
   let inflight = null;
 
   async function fetchOnce() {
+    // 用户可能在 Mana 运行期间切换代理；每次真正联网前刷新一次全局 dispatcher。
+    await refreshProxyImpl();
     // 主路：GitHub API（有 notes/资产元数据）。共享代理出口 IP 常把 60/h 未认证配额耗尽 → 403
     try {
       const res = await fetchImpl(API_URL, {

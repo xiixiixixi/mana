@@ -38,7 +38,7 @@ Mana 是一个纯本地的 macOS 菜单栏应用（Swift 壳 + 内置 Node 运�
 
 1. 从 [Releases](../../releases) 下载 `Mana.dmg`
 2. 打开 DMG，把 Mana 拖入 Applications
-3. 首次打开：**右键 Mana → 打开 → 再点"打开"**（ad-hoc 签名无公证，需手动放行一次）
+3. 首次打开：**右键 Mana → 打开 → 再点"打开"**（当前使用开发调试证书且未公证，仍可能需要手动放行一次）
 4. 菜单栏点开 → `config` 添加各平台 API Key（Key 存在本机 Keychain）
 
 > 从 TokenLens 升级：Keychain 里的 Key 会在首次启动时自动迁移，无需重配。
@@ -67,6 +67,8 @@ npm test                  # 28 tests
 bash src-swift/build.sh   # 本机构建（含个人配置）
 DIST=1 bash src-swift/build.sh   # 干净分发构建
 ```
+
+构建会优先使用本机的 `Developer ID Application`，其次使用 `Apple Development`，都没有时才退回 ad-hoc；也可通过 `SIGN_IDENTITY` 显式指定。只有 `Developer ID Application` 配合苹果公证，才能获得完整的外部分发体验。
 
 架构与约定见 [AGENTS.md](AGENTS.md)。核心不变量：剩余语义三端同步（`services/remaining.js` / `popover.html` / `main.swift`）；界面不出现成本金额；菜单栏保持紧凑（刘海会吞溢出项）。
 

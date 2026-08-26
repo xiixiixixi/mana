@@ -36,7 +36,7 @@ mana/  (repo root = project root)
 | App config (.config.json) | `src/server/routes/config.js` | notify + ui sections; read by Node routes AND Swift `AppConfig.load()`; bundled at build time |
 | Fix popover white screen | `src-swift/main.swift` `startNode()` | Bundled node path resolution |
 | GitHub OAuth flow | `settings.html` `githubAuth()` + `src/server/routes/githubAuth.js` | Device flow, auto-copies code + opens browser |
-| Build DMG for distribution | `bash src-swift/build.sh` | Bundles node binary + 19 dylibs + server code + npm deps + AppIcon.icns |
+| Build DMG for distribution | `bash src-swift/build.sh` | Bundles node binary + 19 dylibs + server code + npm deps + AppIcon.icns; signing prefers Developer ID, then Apple Development, then ad-hoc |
 | Regenerate app icon | `cd src-swift && swift gen_icon.swift icons/icon-1024.png && iconutil -c icns icons/AppIcon.iconset -o icons/AppIcon.icns` | Block-bar motif (white/gray/orange rows on black) |
 | Multi-key per-provider | `src/server/routes/api.js` `collectUsage()` | Expands multi-key providers into per-key entries |
 | 自更新（auto upgrade） | `src/server/services/updater.js` + `routes/update.js`（检查）；`src-swift/main.swift` SelfUpdate 段（安装） | 查 GitHub latest release（API 403/限流时自动降级 `releases/latest` 302 跳转拿 tag，资产 URL 固定 `Mana.dmg`）；Swift 下载→hdiutil 挂载→版本校验→原地替换（旧包进废纸篓）→剥 quarantine→看门 shell 重启。自动升级仅 `/Applications/` 前缀；手动（settings UPDATE 区块 → `mana://update?url=&ver=`）不限位置。版本号唯一来源 package.json，build.sh 写入 `Resources/version` + Info.plist |
@@ -82,7 +82,7 @@ osascript -e 'tell application "Mana" to quit'; pkill -f "Mana.app/Contents/MacO
 
 ## NOTES
 
-- DMG is ad-hoc signed (no Apple Developer cert). First launch: right-click → Open to bypass Gatekeeper.
+- Build auto-selects Developer ID, then Apple Development, then ad-hoc (`SIGN_IDENTITY` overrides). Apple Development is not a distribution identity and the DMG is not notarized, so first launch may still require right-click → Open.
 - Node binary in bundle depends on 19 Homebrew dylibs. Build script recursively collects + fixes `@loader_path` + re-signs.
 - `libnode.137.dylib` is 57MB, dominates bundle size. DMG compression brings it to ~41MB.
 - Frontend is vanilla JS (no React/Babel). Web fonts load from Google Fonts CDN (Space Mono); falls back to SF Mono/Menlo offline.

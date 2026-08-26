@@ -1,6 +1,6 @@
 {
   "name": "mana",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "private": true,
   "bin": { "mana": "./src/cli.js" },
   "scripts": {

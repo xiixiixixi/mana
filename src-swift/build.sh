@@ -109,10 +109,26 @@ cp "$PROJECT_ROOT/package.json" "$RES_DIR/"
 rm -f "$RES_DIR/package.json" "$RES_DIR/package-lock.json"
 
 # 6. Sign everything
+# 优先正式 Developer ID；本机只有 Apple Development 时按用户要求使用它。
+# SIGN_IDENTITY="-" 可显式退回 ad-hoc，SIGN_IDENTITY="证书名" 可显式指定。
 chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME" "$RES_DIR/node"
-codesign --force --sign - "$RES_DIR/node" 2>/dev/null
-codesign --force --sign - "$RES_DIR/lib/"*.dylib 2>/dev/null
-codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null
+if [ -z "$SIGN_IDENTITY" ]; then
+    SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)
+fi
+if [ -z "$SIGN_IDENTITY" ]; then
+    SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' | head -1)
+fi
+SIGN_IDENTITY=${SIGN_IDENTITY:--}
+echo "Signing identity: $SIGN_IDENTITY"
+
+for f in "$RES_DIR/lib/"*.dylib; do
+    codesign --force --sign "$SIGN_IDENTITY" "$f"
+done
+codesign --force --sign "$SIGN_IDENTITY" "$RES_DIR/node"
+codesign --force --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
 echo "Bundle: $(du -sh "$RES_DIR" | cut -f1) ($(ls "$RES_DIR/lib/"*.dylib | wc -l | tr -d ' ') dylibs)"
 
@@ -124,6 +140,8 @@ cp -R "$APP_BUNDLE" "$DMG_DIR/"
 ln -s /Applications "$DMG_DIR/Applications"
 hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG_FILE" > /dev/null
 rm -rf "$DMG_DIR"
+codesign --force --sign "$SIGN_IDENTITY" "$DMG_FILE"
+codesign --verify --verbose=2 "$DMG_FILE"
 
 echo "=== Done ==="
 echo "DMG: $DMG_FILE ($(du -h "$DMG_FILE" | cut -f1))"
