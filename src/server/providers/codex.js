@@ -57,6 +57,21 @@ function normalizeAppServerUsage(result) {
   };
 }
 
+function normalizeAppServerAccountUsage(result) {
+  const buckets = (Array.isArray(result?.dailyUsageBuckets) ? result.dailyUsageBuckets : [])
+    .filter(item => /^\d{4}-\d{2}-\d{2}$/.test(String(item?.startDate || ''))
+      && Number.isFinite(Number(item?.tokens))
+      && Number(item.tokens) >= 0)
+    .map(item => ({ startDate: item.startDate, tokens: Number(item.tokens) }))
+    .sort((a, b) => a.startDate.localeCompare(b.startDate));
+  if (!buckets.length) return null;
+  return {
+    summary: result?.summary && typeof result.summary === 'object' ? result.summary : {},
+    dailyUsageBuckets: buckets,
+    latestDate: buckets[buckets.length - 1].startDate,
+  };
+}
+
 async function fetchCodexAppServerUsage({
   binary = findCodexBinary(),
   spawnImpl = spawn,
@@ -85,8 +100,16 @@ async function fetchCodexAppServerUsage({
     let stdoutBuffer = '';
     let stderrBuffer = '';
     let settled = false;
-    let requestedRateLimits = false;
-    const timer = setTimeout(() => finish(new Error('Codex app-server timed out')), timeoutMs);
+    let requestedUsage = false;
+    let rateLimitsUsage = null;
+    let accountTokenUsage = null;
+    let rateLimitsDone = false;
+    let accountUsageDone = false;
+    let graceTimer = null;
+    const timer = setTimeout(() => {
+      if (rateLimitsUsage) finish(null, { ...rateLimitsUsage, accountTokenUsage });
+      else finish(new Error('Codex app-server timed out'));
+    }, timeoutMs);
 
     function send(message) {
       if (settled || child.stdin.destroyed) return;
@@ -98,6 +121,7 @@ async function fetchCodexAppServerUsage({
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (graceTimer) clearTimeout(graceTimer);
       try { child.stdin.end(); } catch {}
       try { child.kill('SIGTERM'); } catch {}
       if (err) reject(err);
@@ -113,23 +137,38 @@ async function fetchCodexAppServerUsage({
       stderrBuffer = (stderrBuffer + chunk.toString()).slice(-1000);
     });
     child.stdout.on('data', chunk => {
+      if (settled) return;
       stdoutBuffer += chunk.toString();
       const lines = stdoutBuffer.split('\n');
       stdoutBuffer = lines.pop() || '';
       for (const line of lines) {
+        if (settled) break;
         let message;
         try { message = JSON.parse(line); } catch { continue; }
-        if (message.id === 1 && message.result && !requestedRateLimits) {
-          requestedRateLimits = true;
+        if (message.id === 1 && message.result && !requestedUsage) {
+          requestedUsage = true;
           send({ method: 'initialized' });
           send({ id: 2, method: 'account/rateLimits/read', params: null });
+          send({ id: 3, method: 'account/usage/read', params: {} });
         } else if (message.id === 2) {
           if (message.error) {
             finish(new Error(`Codex app-server: ${message.error.message || 'rate limit request failed'}`));
           } else {
-            try { finish(null, normalizeAppServerUsage(message.result)); }
-            catch (err) { finish(err); }
+            try {
+              rateLimitsUsage = normalizeAppServerUsage(message.result);
+              rateLimitsDone = true;
+              if (accountUsageDone) finish(null, { ...rateLimitsUsage, accountTokenUsage });
+              else {
+                // 旧版 app-server 可能不支持日桶；附加统计最多只短暂等待，
+                // 不能拖慢已经成功的实时配额。
+                graceTimer = setTimeout(() => finish(null, { ...rateLimitsUsage, accountTokenUsage }), 1200);
+              }
+            } catch (err) { finish(err); }
           }
+        } else if (message.id === 3) {
+          accountUsageDone = true;
+          if (!message.error) accountTokenUsage = normalizeAppServerAccountUsage(message.result);
+          if (rateLimitsDone) finish(null, { ...rateLimitsUsage, accountTokenUsage });
         }
       }
     });
@@ -137,7 +176,7 @@ async function fetchCodexAppServerUsage({
     send({
       id: 1,
       method: 'initialize',
-      params: { clientInfo: { name: 'mana', version: '0.2.16' } },
+      params: { clientInfo: { name: 'mana', version: '0.2.17' } },
     });
   });
 }
@@ -319,7 +358,10 @@ class CodexProvider extends BaseProvider {
         // 避免在「实时 100%」与「昨日快照 1%」之间来回跳
         CodexProvider.lastOauth = { usage: oauth, at: Date.now() };
         saveLastGoodUsage(oauth);
-        return this.buildUsage({ status: 'active', plan: oauth.plan_type || 'Codex', quotas });
+        return {
+          ...this.buildUsage({ status: 'active', plan: oauth.plan_type || 'Codex', quotas }),
+          ...(oauth.accountTokenUsage ? { accountTokenUsage: oauth.accountTokenUsage } : {}),
+        };
       }
     }
 
@@ -342,6 +384,7 @@ class CodexProvider extends BaseProvider {
         }),
         stale: true,
         warning: describeLiveError(liveError, '上次实时缓存'),
+        ...(last.usage.accountTokenUsage ? { accountTokenUsage: last.usage.accountTokenUsage } : {}),
       };
     }
     const rateLimits = snapshot?.rateLimits;
@@ -467,6 +510,7 @@ module.exports = {
   CodexProvider,
   findCodexBinary,
   normalizeAppServerUsage,
+  normalizeAppServerAccountUsage,
   fetchCodexAppServerUsage,
   fetchCodexOAuthUsage,
   describeLiveError,

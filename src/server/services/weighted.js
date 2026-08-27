@@ -1,7 +1,6 @@
-// 计费等效 tokens：与 Claude 额度扣减一致的权重（缓存读 0.1×、缓存写 1.25×）。
-// 原始总和（input+output+cacheRead+cacheCreate）会把每轮重复读取的上下文全部计入，
-// 重缓存场景一天可虚高数倍（实测 51M 原始 ≈ 7M 等效），作为"消耗"展示具有误导性。
-// localUsage.js（daily/summary/会话分析）与 popover LOCAL 卡共用此口径。
+// 计费等效 tokens：缓存读 0.1×、缓存写 1.25×。
+// LOCAL 主卡已统一展示实际 token；这个次级口径只保留给 Claude 会话燃烧速度分析
+// 和 daily 明细，不能再拿来与主卡或官方账户日桶相加。
 function weightedTokens(inputTokens, outputTokens, cacheRead, cacheCreate) {
   return (inputTokens || 0) + (outputTokens || 0) + (cacheRead || 0) * 0.1 + (cacheCreate || 0) * 1.25;
 }

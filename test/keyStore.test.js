@@ -158,7 +158,13 @@ test('Ssec8 rebuilds metadata from Keychain when index file is lost', {skip: !is
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mana-keystore-'));
   tempDirs.push(dir);
   const lostFile = path.join(dir, '.keys.json');
-  const storeB = createKeyStore({keysFile: lostFile, service});
+  // 重建逻辑只需要账号索引；测试把这一步注入，避免固定依赖当前登录钥匙串，
+  // 仍然会从真实 macOS Keychain 读取刚写入的两条密钥并验证恢复结果。
+  const storeB = createKeyStore({
+    keysFile: lostFile,
+    service,
+    listAccounts: () => [`deepseek:${e1.id}`, `zhipu:${e2.id}`],
+  });
 
   const status = storeB.status('s');
   assert.equal(status.deepseek.length, 1, 'deepseek key should be recovered');

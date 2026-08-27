@@ -22,6 +22,9 @@ async function createApp() {
   const keyStore = createKeyStore();
   const cache = createCache();
   const localUsageService = createLocalUsageService();
+  // Codex 首次建立跨 fork 去重索引需要读取较多本地日志；应用启动后即后台预热，
+  // 用户打开菜单时复用同一个 in-flight 任务，不会重复扫描。
+  localUsageService.get().catch(() => {});
   const githubOAuth = createGithubOAuth();
   const updater = createUpdater({ refreshProxyImpl: refreshProxy });
   const providers = registerAll({ keyStore, refreshProxy });

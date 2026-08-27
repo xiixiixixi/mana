@@ -43,7 +43,8 @@ h1{font-size:12px;font-weight:700;letter-spacing:.28em;text-transform:uppercase;
 .card-warning{font-size:9px;color:var(--gray);padding-top:7px;margin-top:7px;border-top:1px dashed var(--border);word-break:break-all}
 /* 本地用量卡（仅 token，不含花费） */
 .local-card{background:var(--card);border:1px solid var(--border);padding:12px 14px}
-.local-title{font-size:10px;font-weight:700;letter-spacing:.2em;color:var(--muted);margin-bottom:7px}
+.local-title{font-size:10px;font-weight:700;letter-spacing:.2em;color:var(--muted);margin-bottom:4px}
+.local-coverage{font-size:8px;color:var(--muted);line-height:1.5;margin-bottom:8px}
 .local-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:9px}
 .local-stat .k{font-size:9px;color:var(--muted);letter-spacing:.08em;margin-bottom:2px}
 .local-stat .v{font-size:13px;font-weight:700}
@@ -52,6 +53,10 @@ h1{font-size:12px;font-weight:700;letter-spacing:.28em;text-transform:uppercase;
 .spark i.hot{background:var(--accent)}
 .spark-x{display:flex;justify-content:space-between;font-size:8px;color:var(--muted);letter-spacing:.04em}
 .local-note{font-size:9px;color:var(--accent);margin-top:6px}
+.local-sources{margin-top:8px;padding-top:7px;border-top:1px dashed var(--border);display:flex;flex-direction:column;gap:5px}
+.local-source{display:grid;grid-template-columns:auto 1fr;gap:1px 10px;font-size:8px;line-height:1.4}
+.local-source-name{color:var(--gray);white-space:nowrap}.local-source-calls{color:var(--muted);text-align:right}
+.local-source-breakdown{grid-column:1/-1;display:flex;justify-content:space-between;gap:8px;color:var(--muted)}
 footer{position:sticky;bottom:0;background:var(--bg);padding:8px 16px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:9px;color:var(--muted)}
 .empty{text-align:center;padding:70px 0}
 .empty-num{font-size:44px;font-weight:700;color:var(--border)}
@@ -99,39 +104,45 @@ function resetHtml(q){
 }
 function localCardHtml(lu){
   if(!lu)return '';
-  var parts=[['zcode',lu.zcode],['claude',lu.claude],['opencode',lu.opencode]].filter(function(p){return p[1]&&p[1].daily&&p[1].daily.length});
-  if(!parts.length)return '';
-  // 合并可折算口径的源（claude + opencode，计费等效：缓存读 0.1×/写 1.25×）。
-  // Codex 除外：其 tokens_used 是平台原始口径（无缓存分项），与等效口径相加会产生
-  // 误导性的巨数（如"本月 13B"）——Codex 用量看它自己的平台卡片
-  var byDay={},names=[];
-  parts.forEach(function(p){names.push(p[0]);(p[1].daily||[]).forEach(function(e){
-    var t=e.weightedTokens!=null?e.weightedTokens:(e.inputTokens||0)+(e.outputTokens||0)+(e.cacheRead||0)+(e.cacheCreate||0);
-    byDay[e.date]=(byDay[e.date]||0)+t;
+  var parts=[['Claude Code',lu.claude],['OpenCode',lu.opencode],['Codex',lu.codex],['ZCode',lu.zcode]].filter(function(p){return p[1]&&p[1].summary});
+  var now=new Date(),days=[],byDay={};
+  for(var i=13;i>=0;i--){var d=new Date(now.getFullYear(),now.getMonth(),now.getDate()-i),dk=localDateKey(d);days.push(dk);byDay[dk]=0}
+  parts.forEach(function(p){(p[1].daily||[]).forEach(function(e){
+    // 只采用各工具自己记录的总 token，不按模型或 API Key 重新归属。
+    if(Object.prototype.hasOwnProperty.call(byDay,e.date))byDay[e.date]+=Number(e.totalTokens)||0;
   })});
   var s={today:0,week:0,month:0};
-  parts.forEach(function(p){s.today+=p[1].summary.todayTokens||0;s.week+=p[1].summary.weekTokens||0;s.month+=p[1].summary.monthTokens||0});
-  var days=Object.keys(byDay).sort().slice(-14);
-  if(!days.length)return '';
+  parts.forEach(function(p){var x=p[1].summary;s.today+=x.todayTokens||0;s.week+=x.weekTokens||0;s.month+=x.monthTokens||0});
   var max=1;days.forEach(function(d){max=Math.max(max,byDay[d])});
-  // 异常：某日 > 30 天均值的 3 倍
-  var all=Object.keys(byDay).map(function(d){return byDay[d]});
+  // 异常：某日 > 固定 14 个自然日均值的 3 倍
+  var all=days.map(function(d){return byDay[d]});
   var mean=all.reduce(function(a,b){return a+b},0)/(all.length||1);
   var hotDay=null,hotRatio=0;
   days.forEach(function(d){var r=mean>0?byDay[d]/mean:0;if(r>3&&r>hotRatio){hotRatio=r;hotDay=d}});
-  var h='<div class="local-card"><div class="local-title" title="计费等效口径：input+output+缓存读×0.1+缓存写×1.25（与额度扣减一致）。仅统计 Claude Code 与 opencode；Codex 为平台原始口径不可比，看其平台卡片">LOCAL · '+esc(names.join(' / '))+'</div>';
+  var activeTools=parts.filter(function(p){var x=p[1].summary,st=(p[1].source||{}).status;return st!=='error'&&st!=='unavailable'&&(x.todayTokens||0)+(x.weekTokens||0)+(x.monthTokens||0)>0}).length;
+  var failedTools=parts.filter(function(p){return (p[1].source||{}).status==='error'}).map(function(p){return p[0]});
+  var unavailableTools=parts.filter(function(p){return (p[1].source||{}).status==='unavailable'}).map(function(p){return p[0]});
+  var h='<div class="local-card"><div class="local-title" title="只统计 Claude Code、OpenCode、Codex、ZCode 四个工具自己记录的总 token；不按所用模型或 API Key 重新归属。">LOCAL · TOOL TOKENS</div>';
+  h+='<div class="local-coverage">固定统计 4 个工具 · 当前 '+activeTools+'/4 有记录<br>按工具归属，不按模型、服务商或 API Key 归属'+(failedTools.length?'<br>读取失败：'+failedTools.map(esc).join('、'):'')+(unavailableTools.length?'<br>未找到数据源：'+unavailableTools.map(esc).join('、'):'')+((failedTools.length||unavailableTools.length)?'<br>当前合计只包含成功读取的工具':'')+'</div>';
   h+='<div class="local-stats">'
-    +'<div class="local-stat"><div class="k">今日</div><div class="v">'+fmtTok(s.today)+'</div></div>'
-    +'<div class="local-stat"><div class="k">本周</div><div class="v">'+fmtTok(s.week)+'</div></div>'
-    +'<div class="local-stat"><div class="k">本月</div><div class="v">'+fmtTok(s.month)+'</div></div></div>';
+    +'<div class="local-stat"><div class="k">今日总量</div><div class="v">'+fmtTok(s.today)+'</div></div>'
+    +'<div class="local-stat"><div class="k">本周总量</div><div class="v">'+fmtTok(s.week)+'</div></div>'
+    +'<div class="local-stat"><div class="k">本月总量</div><div class="v">'+fmtTok(s.month)+'</div></div></div>';
   h+='<div class="spark">';
   days.forEach(function(d){var pct=byDay[d]/max*100;h+='<i'+(hotDay===d?' class="hot"':'')+' style="height:'+Math.max(6,pct)+'%" title="'+d+' · '+fmtTok(byDay[d])+' tok"></i>'});
   h+='</div>';
   h+='<div class="spark-x"><span>'+esc(days[0].slice(5))+'</span><span>14d</span><span>'+esc(days[days.length-1].slice(5))+'</span></div>';
-  if(hotDay)h+='<div class="local-note">! '+esc(hotDay.slice(5).replace('-','/'))+' 消耗为近30天均值的 '+hotRatio.toFixed(1)+' 倍</div>';
+  if(hotDay)h+='<div class="local-note">! '+esc(hotDay.slice(5).replace('-','/'))+' 消耗为 14 个自然日均值的 '+hotRatio.toFixed(1)+' 倍</div>';
+  h+='<div class="local-sources">'+parts.map(function(p){
+    var x=p[1].summary,src=p[1].source||{},tip=src.note||src.label||p[0]+' 工具记录';
+    if(src.status==='error')return '<div class="local-source" title="'+esc(tip)+'"><span class="local-source-name">'+esc(p[0])+'</span><span class="local-source-calls">读取失败</span><span class="local-source-breakdown"><span>来源：'+esc(src.label||'工具本地记录')+'</span><span>不按 0 计</span></span></div>';
+    if(src.status==='unavailable')return '<div class="local-source" title="'+esc(tip)+'"><span class="local-source-name">'+esc(p[0])+'</span><span class="local-source-calls">未找到数据源</span><span class="local-source-breakdown"><span>来源：'+esc(src.label||'工具本地记录')+'</span><span>不按 0 计</span></span></div>';
+    return '<div class="local-source" title="'+esc(tip)+'"><span class="local-source-name">'+esc(p[0])+'</span><span class="local-source-calls">本周 '+fmtTok(x.weekTokens||0)+' · 本月 '+fmtTok(x.monthTokens||0)+'</span><span class="local-source-breakdown"><span>来源：'+esc(src.label||'工具本地记录')+'</span><span>今日 '+fmtTok(x.todayTokens||0)+'</span></span></div>';
+  }).join('')+'</div>';
   h+='</div>';
   return h;
 }
+function localDateKey(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function render(){
   var visible=data.filter(function(p){
     if(p.status==='error')return true; // 错误也展示（排到最后），便于发现过期 Key
@@ -148,13 +159,13 @@ function render(){
   $('dot').textContent='['+(stt==='na'?'--':stt)+']';
   $('dot').className='st '+stt;
   $('statusText').textContent='updated '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})+' · '+ok.length+' platforms'+(err.length?' · '+err.length+' err':'');
+  var lh=localCardHtml(local);
   if(!sorted.length){
-    $('list').innerHTML='<div class="empty"><div class="empty-num">000</div><div class="empty-text">configure API keys<br>to monitor your AI usage</div></div>';
+    $('list').innerHTML=lh||'<div class="empty"><div class="empty-num">000</div><div class="empty-text">暂无工具统计或平台额度</div></div>';
     $('footerLeft').textContent='no keys';
     return;
   }
   $('footerLeft').textContent=m!=null?'lowest '+m+'%':'ok';
-  var lh=localCardHtml(local);
   var h=lh;
   sorted.forEach(function(p){
     h+='<div class="card">';

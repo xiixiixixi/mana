@@ -3,7 +3,7 @@
 // 用法:
 //   mana usage [--json] [--provider <id>]   全平台用量（默认按剩余%升序）
 //   mana summary [--json]                   单行摘要：最低剩余 + 平台数
-//   mana local [--days 7] [--json]          本地 CLI 用量（Claude Code/Codex/OpenCode）
+//   mana local [--json]                     本地 Agent 用量（固定今日/自然周/自然月）
 // 端口发现：优先读端口文件（41119 被占时 Node 会回退并写入），否则扫描 41119-41128
 const os = require('os');
 const fs = require('fs');
@@ -20,8 +20,6 @@ let BASE = null;
 const args = process.argv.slice(2);
 const cmd = args[0] || 'usage';
 const json = args.includes('--json');
-const daysIdx = args.indexOf('--days');
-const days = daysIdx >= 0 ? parseInt(args[daysIdx + 1]) || 7 : 7;
 const provIdx = args.indexOf('--provider');
 const provider = provIdx >= 0 ? args[provIdx + 1] : null;
 
@@ -88,17 +86,35 @@ function pad(s, w) {
   if (cmd === 'local') {
     const j = await get('/api/local-usage');
     if (json) return console.log(JSON.stringify(j));
-    // 主口径：可折算等效的源（claude + opencode）；codex 为平台原始口径，单列
+    // 固定只统计四个工具自己记录的总 token；不按模型、服务商或 API Key 重新归属。
     const w = { today: 0, week: 0, month: 0 };
-    for (const src of [j.zcode, j.claude, j.opencode]) {
-      if (src && src.summary) { w.today += src.summary.todayTokens || 0; w.week += src.summary.weekTokens || 0; w.month += src.summary.monthTokens || 0; }
+    const sources = [['claude-code', j.claude], ['opencode', j.opencode], ['codex', j.codex], ['zcode', j.zcode]];
+    const incomplete = sources.some(([, src]) => src?.source?.status === 'error' || src?.source?.status === 'unavailable');
+    for (const [, src] of sources) {
+      if (src && src.summary) {
+        w.today += src.summary.todayTokens || 0;
+        w.week += src.summary.weekTokens || 0;
+        w.month += src.summary.monthTokens || 0;
+      }
     }
-    console.log(`local usage (billing-equivalent, last 30d)`);
-    console.log(`  today  ${Math.round(w.today)}`);
-    console.log(`  week   ${Math.round(w.week)}`);
-    console.log(`  month  ${Math.round(w.month)}`);
-    if (j.codex && j.codex.summary && j.codex.summary.monthTokens > 0) {
-      console.log(`  codex  ${Math.round(j.codex.summary.monthTokens)} raw tokens this month (platform metric, not comparable)`);
+    console.log(`四工具总 token（Claude Code / OpenCode / Codex / ZCode）${incomplete ? ' · 当前合计不完整' : ''}`);
+    console.log(`  今日  ${Math.round(w.today)}`);
+    console.log(`  本周  ${Math.round(w.week)}`);
+    console.log(`  本月  ${Math.round(w.month)}`);
+    for (const [name, src] of sources) {
+      if (src?.summary) {
+        const s = src.summary;
+        if (src.source?.status === 'error') {
+          console.log(`  ${name.padEnd(11)} 读取失败 · 不按 0 计`);
+          continue;
+        }
+        if (src.source?.status === 'unavailable') {
+          console.log(`  ${name.padEnd(11)} 未找到数据源 · 不按 0 计`);
+          continue;
+        }
+        console.log(`  ${name.padEnd(11)} 今日 ${Math.round(s.todayTokens || 0)} · 本周 ${Math.round(s.weekTokens || 0)} · 本月 ${Math.round(s.monthTokens || 0)}`);
+        console.log(`  ${''.padEnd(11)} 来源：${src.source?.label || '工具本地记录'}`);
+      }
     }
     return;
   }

@@ -12,7 +12,7 @@ Mana 是一个纯本地的 macOS 菜单栏应用（Swift 壳 + 内置 Node 运�
 - **注意力模式菜单栏** —— 刘海屏空间有限，只有剩余低于阈值（默认 80%）的平台才常驻菜单栏，按紧急度排列、残血变红；健康的平台点开 popover 看
 - **多轨道额度** —— 5h 窗口 / 周额度 / 月度积分分轨展示（Claude 时代的三池三时钟问题不存在了，我们直接显示每条轨）
 - **阈值通知** —— 剩余不足时 macOS 系统通知（20%/10% 两档、余额绝对值阈值），跨阈值才触发不轰炸，右键可暂停 1 小时
-- **本地用量趋势** —— 被动解析 `~/.claude`、`~/.codex`、opencode 本地数据，14 天 token 趋势 + 异常日标记（无任何成本数字）
+- **四工具 token 统计** —— 固定只统计 Claude Code、OpenCode、Codex、ZCode；直接读取工具自己的统计数据或 token 记录，不管底层使用哪个模型或 API Key，都归到发起调用的工具；今日/本周/本月按本机固定自然窗口统计（无任何成本数字）
 - **多 Key 管理** —— 每个平台可挂多个 API Key，逐 Key 展开显示；Key 全部存 macOS Keychain，不落盘
 - **CLI** —— `mana usage --json` / `summary` / `local`，供 statusline / 脚本消费
 - **隐私** —— 纯本地运行，无遥测；API Key 存 Keychain；只在你点击时访问平台 API
@@ -30,7 +30,7 @@ Mana 是一个纯本地的 macOS 菜单栏应用（Swift 壳 + 内置 Node 运�
 | OpenRouter | API Key | Credits 余额 |
 | Grok (xAI) | API Key | Credits 余额 |
 | GitHub Copilot | OAuth 设备流 | Premium 额度 + Chat/补全 |
-| Codex | 本地 `~/.codex` | 5h/周窗口 + 累计 token |
+| Codex | 本地 OAuth + `~/.codex` | 实时配额；token 只计入四工具本地统计，不与账号/API 总量相加 |
 
 ## 安装
 
