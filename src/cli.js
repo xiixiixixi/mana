@@ -79,7 +79,7 @@ function pad(s, w) {
   if (cmd === 'summary') {
     const j = await get('/api/summary');
     if (json) return console.log(JSON.stringify(j));
-    console.log(`lowest ${j.lowestRemainingPct}% (${j.lowestProvider}) · ${j.providerCount} providers · ${new Date(j.updatedAt).toLocaleTimeString()}`);
+    console.log(`lowest ${j.lowestRemainingPct}% (${j.lowestProvider}${j.lowestQuota ? ' · ' + j.lowestQuota : ''}) · ${j.providerCount} providers · ${new Date(j.updatedAt).toLocaleTimeString()}`);
     return;
   }
 

@@ -103,6 +103,24 @@ function createUsageOrchestrator({ providers, keyStore, cache }) {
       quotas: mergedQuotas,
       latency: Math.round(performance.now() - t0),
       keyCount: successes.length,
+      // 每个 key 的原始结果随聚合一起返回：collectUsage 展开多 key 时直接复用，
+      // 不再对上游二次请求（也吃得到缓存与 429 冷却）
+      _perKey: keyList.map((keyEntry, idx) => {
+        const r = perKeyResults[idx];
+        const label = (keyEntry?.label && keyEntry.label !== 'None') ? keyEntry.label : (keyEntry?.hint || null);
+        if (r.ok) {
+          return {
+            ...provider.getMetadata(), ...r.data,
+            id: providerId, label, hint: keyEntry?.hint || null,
+            keyId: r.keyId, status: 'active', fetchedAt: Date.now(),
+          };
+        }
+        return {
+          ...provider.getMetadata(),
+          id: providerId, label, hint: keyEntry?.hint || null,
+          keyId: r.keyId, status: 'error', error: r.error, quotas: [], fetchedAt: Date.now(),
+        };
+      }),
     };
 
     cache.set(providerId, merged, provider.cacheTTL);

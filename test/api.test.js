@@ -317,3 +317,67 @@ test('S7 /api/usage hides oauth/local providers whose environment has no credent
     }
   }
 });
+
+test('S5 /api/summary 报出最低剩余来自哪个平台的哪个额度', async () => {
+  const multi = createProvider('multi', async () => ({
+    ...multi.getMetadata(),
+    status: 'active',
+    quotas: [
+      { label: '5h 窗口', used: 10, total: 100 },
+      { label: 'MCP月度', used: 75, total: 100 },
+    ],
+    fetchedAt: Date.now(),
+  }));
+  const server = await startApiServer(
+    new Map([['multi', multi]]),
+    createKeyStore({ multi: 'key' }),
+    createNullCache(),
+  );
+  try {
+    const { body } = await getJson(server.baseUrl, '/api/summary');
+    assert.equal(body.lowestRemainingPct, 25);
+    assert.equal(body.lowestProvider, 'multi');
+    assert.equal(body.lowestQuota, 'MCP月度');
+  } finally {
+    await server.close();
+  }
+});
+
+test('S6 多 key 平台一次 /api/usage 只请求上游一遍（复用 _perKey，不二次拉取）', async () => {
+  const fetchUsage = mock.fn(async () => ({
+    id: 'multikey', name: 'multikey',
+    status: 'active',
+    quotas: [{ label: '余额', balance: 10, total: 0 }],
+    fetchedAt: Date.now(),
+  }));
+  const provider = createProvider('multikey', fetchUsage);
+  const twoKeyStore = {
+    ...createKeyStore({}),
+    getAllKeysForProvider: (_sid, _pid) => [
+      { id: 'k1', label: '主号', hint: 'sk-…1', apiKey: 'k1', createdAt: null },
+      { id: 'k2', label: null, hint: 'sk-…2', apiKey: 'k2', createdAt: null },
+    ],
+    status: () => ({ multikey: [{ configured: true }, { configured: true }] }),
+  };
+  const store = new Map();
+  const mapCache = {
+    get: k => store.get(k) ?? null,
+    set: (k, v) => store.set(k, v),
+    invalidate: () => store.clear(),
+  };
+  const server = await startApiServer(new Map([['multikey', provider]]), twoKeyStore, mapCache);
+
+  try {
+    const first = await getJson(server.baseUrl, '/api/usage');
+    assert.equal(first.body.providers.length, 2);
+    assert.ok(first.body.providers.every(p => p.status === 'active'));
+    assert.equal(first.body.providers.find(p => p.keyId === 'k1').label, '主号');
+    assert.equal(fetchUsage.mock.callCount(), 2); // 2 个 key 各拉一次，没有第二轮
+
+    const second = await getJson(server.baseUrl, '/api/usage'); // 命中缓存，零新请求
+    assert.equal(second.body.providers.length, 2);
+    assert.equal(fetchUsage.mock.callCount(), 2);
+  } finally {
+    await server.close();
+  }
+});

@@ -58,9 +58,9 @@ func configFileURL() -> URL? {
     return root.appendingPathComponent(".config.json")
 }
 
-// MARK: - Status Items（锚点仪表 + 每平台一个指示）
-// [仪表][Codex 30%][智谱 66%]…——各平台独立显示自己的最低剩余，互不顶替；
-// 每个指示可被用户 cmd-拖动排序/移除（NSStatusItem 原生行为）
+// MARK: - Status Items（锚点仪表 + 每个待关注额度一个指示）
+// [仪表][智谱·MCP 15%][Codex·5h 30%]…——多额度平台按额度种类拆条（智谱 5h/月度/MCP 各自显示），
+// 单额度平台只显示平台名；每个指示可被用户 cmd-拖动排序/移除（NSStatusItem 原生行为）
 let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 if let button = statusItem.button {
     if let img = NSImage(systemSymbolName: "gauge", accessibilityDescription: "Mana") {
@@ -76,11 +76,19 @@ if let button = statusItem.button {
 }
 
 struct MenubarEntry {
-    let id: String          // provider id
-    let name: String        // 菜单栏显示名
-    var pct: Double?        // 该平台全部额度/全部 key 的最低剩余%；余额型为 nil
+    let id: String          // 唯一 id：平台 id（单额度）或多额度分组 id（"zhipu#MCP月度"）
+    let name: String        // 菜单栏显示名；多额度平台带分组尾巴（「智谱·MCP」）
+    var pct: Double?        // 该分组全部额度/全部 key 的最低剩余%；余额型为 nil
     var balanceText: String // 余额型显示（如 ¥3.3k）
+    var stale: Bool         // 平台本轮拉取失败时沿用的最近一次数据
 }
+// 平台瞬时拉取失败（网络抖动/超时）时，10 分钟内沿用最近一次数据（带 ? 标记），
+// 避免菜单栏条目闪没——失败的平台 Node 侧要等 300s 才补抓
+var lastGoodByProvider: [String: (entries: [MenubarEntry], at: Date)] = [:]
+let staleKeepInterval: TimeInterval = 10 * 60
+// 刘海屏兜底：溢出的状态项会被 macOS 静默藏到刘海后。上限 4 条、升序排列
+// （最紧急在最左、离刘海最远），放不下的最不紧急项交给 popover 与仪表锚点颜色兜底
+let menubarItemCap = 4
 var providerItems: [String: NSStatusItem] = [:]
 let menubarNames = [
     "codex": "Codex", "grok": "Grok", "github-copilot": "Copilot",
@@ -120,7 +128,12 @@ func applyAnchorAlert(_ entries: [MenubarEntry], config: AppConfig) {
     button.imagePosition = .imageOnly
     button.attributedTitle = NSAttributedString(string: "")
     button.contentTintColor = state == .critical ? .systemRed : state == .warning ? .systemYellow : .labelColor
-    button.toolTip = pcts.min().map { "Mana · 最低剩余 \(Int($0))%" } ?? "Mana"
+    var tip = pcts.min().map { "Mana · 最低剩余 \(Int($0))%" } ?? "Mana"
+    let attention = pcts.filter { $0 < config.attentionPct }.count
+    if attention > menubarItemCap {
+        tip += " · \(attention) 项待关注（菜单栏只放最紧急的 \(menubarItemCap) 项，其余见弹窗）"
+    }
+    button.toolTip = tip
 }
 func applyMenubar(_ entries: [MenubarEntry]) {
     DispatchQueue.main.async {
@@ -128,13 +141,13 @@ func applyMenubar(_ entries: [MenubarEntry]) {
         applyAnchorAlert(entries, config: cfg)
         if cfg.menubarMode == 1 { applyItems([]); return }
         // 注意力模式：刘海屏菜单栏空间极其有限（溢出项会被系统藏到刘海后），
-        // 只有剩余低于 attentionPct 的平台才占一个菜单栏位；健康平台在 popover 看全貌
+        // 只有剩余低于 attentionPct 的额度分组才占一个菜单栏位；健康平台在 popover 看全貌
         let visible = entries.filter { e in
             if let p = e.pct { return p < cfg.attentionPct }
             return false // 余额型/无限型不常驻菜单栏（告警走系统通知）
         }
-        // 平台长条可能因菜单栏空间不足被 macOS 隐藏；固定宽度的仪表锚点用警示颜色兜底。
-        applyItems(visible.sorted { ($0.pct ?? 100) < ($1.pct ?? 100) })
+        // 升序 = 最紧急在最左（离刘海最远）；超出上限的最不紧急项让位给 popover/仪表锚点
+        applyItems(Array(visible.sorted { ($0.pct ?? 100) < ($1.pct ?? 100) }.prefix(menubarItemCap)))
     }
 }
 func applyItems(_ visible: [MenubarEntry]) {
@@ -152,6 +165,7 @@ func applyItems(_ visible: [MenubarEntry]) {
         } else if !e.balanceText.isEmpty {
             title += " " + e.balanceText
         }
+        if e.stale { title += "?" } // 平台本轮拉取失败，显示的是最近一次数据
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold),
             .foregroundColor: menubarColor(e.pct),
@@ -314,39 +328,87 @@ func refresh() {
         guard let d = d, e == nil, let j = try? JSONSerialization.jsonObject(with: d) as? [String:Any],
               let ps = j["providers"] as? [[String:Any]] else { return } // 失败时保留上次的菜单栏状态
         var checks: [(name: String, label: String, q: [String: Any])] = []
-        // 按平台聚合：每平台取其全部额度（含多 key 展开）的最低剩余%；余额型平台汇总余额
-        struct Agg { var minPct: Double?; var balSum: Double?; var unit: String; var hasUnlimited = false }
-        var agg: [String: Agg] = [:]
-        var order: [String] = []
+        // 按平台×额度种类聚合：多额度平台（智谱 5h/每月/MCP、Codex 5h/每周）按额度分组
+        // 各自取最低剩余%（含多 key 展开），菜单栏以「智谱·5h」「智谱·MCP」区分；
+        // 单额度平台保持纯平台名，余额型平台汇总余额
+        struct Group { var minPct: Double?; var balSum: Double?; var unit: String; var hasUnlimited = false }
+        struct Prov { var groups: [String: Group] = [:]; var order: [String] = []; var ok = 0 }
+        var provs: [String: Prov] = [:]
+        var provOrder: [String] = []
         for p in ps {
-            guard let pid = p["id"] as? String, p["status"] as? String != "error" else { continue }
+            guard let pid = p["id"] as? String else { continue }
+            if provs[pid] == nil { provs[pid] = Prov(); provOrder.append(pid) }
+            guard p["status"] as? String != "error" else { continue }
+            provs[pid]!.ok += 1
             let pName = p["name"] as? String ?? "?"
             let disp = (p["label"] as? String).map { "\(pName)·\($0)" } ?? pName
-            if agg[pid] == nil { agg[pid] = Agg(minPct: nil, balSum: nil, unit: ""); order.append(pid) }
             for q in p["quotas"] as? [[String:Any]] ?? [] {
+                let gkey = quotaGroupKey(q["label"] as? String ?? "额度")
+                if provs[pid]!.groups[gkey] == nil {
+                    provs[pid]!.groups[gkey] = Group(minPct: nil, balSum: nil, unit: "")
+                    provs[pid]!.order.append(gkey)
+                }
                 var remPct: Double? = nil
                 if let t = q["total"] as? Double, t > 0 {
                     if let u = q["used"] as? Double { remPct = (1 - u / t) * 100 }
                     else if let b = q["balance"] as? Double { remPct = b / t * 100 }
                 }
+                var g = provs[pid]!.groups[gkey]!
                 if let r = remPct {
                     let c = min(max(r, 0), 100)
-                    agg[pid]!.minPct = min(agg[pid]!.minPct ?? c, c)
+                    g.minPct = min(g.minPct ?? c, c)
                 } else if let b = q["balance"] as? Double {
-                    agg[pid]!.balSum = (agg[pid]!.balSum ?? 0) + b
-                    if agg[pid]!.unit.isEmpty { agg[pid]!.unit = q["unit"] as? String ?? "" }
+                    g.balSum = (g.balSum ?? 0) + b
+                    if g.unit.isEmpty { g.unit = q["unit"] as? String ?? "" }
                 } else if q["unlimited"] as? Bool == true {
-                    agg[pid]!.hasUnlimited = true
+                    g.hasUnlimited = true
                 }
+                provs[pid]!.groups[gkey] = g
                 checks.append((disp, q["label"] as? String ?? "额度", q))
             }
         }
-        let entries = order.map { pid -> MenubarEntry in
-            let a = agg[pid]!
-            let name = menubarNames[pid] ?? pid
-            var bal = a.minPct == nil && a.balSum != nil ? (a.unit + compactBalance(a.balSum!)) : ""
-            if a.minPct == nil && a.balSum == nil && a.hasUnlimited { bal = "∞" }
-            return MenubarEntry(id: pid, name: name, pct: a.minPct, balanceText: bal)
+        // 组装条目：≥2 个百分比额度的平台按分组拆条；单分组沿用平台名不加尾巴
+        var entries: [MenubarEntry] = []
+        for pid in provOrder {
+            let pv = provs[pid]!
+            guard pv.ok > 0 else { continue } // 本轮全错的平台走 lastGood 兜底
+            let dispName = menubarNames[pid] ?? pid
+            let pctKeys = pv.order.filter { pv.groups[$0]!.minPct != nil }
+            if pctKeys.count >= 2 {
+                for k in pctKeys {
+                    entries.append(MenubarEntry(id: "\(pid)#\(k)", name: "\(dispName)·\(menubarTag(k))", pct: pv.groups[k]!.minPct, balanceText: "", stale: false))
+                }
+            } else if let k = pctKeys.first {
+                entries.append(MenubarEntry(id: pid, name: dispName, pct: pv.groups[k]!.minPct, balanceText: "", stale: false))
+            } else {
+                // 无百分比额度：余额型汇总 / 无限型
+                var bal: Double? = nil; var unit = ""; var unlimited = false
+                for k in pv.order {
+                    let g = pv.groups[k]!
+                    if let s = g.balSum { bal = (bal ?? 0) + s; if unit.isEmpty { unit = g.unit } }
+                    if g.hasUnlimited { unlimited = true }
+                }
+                if let b = bal {
+                    entries.append(MenubarEntry(id: pid, name: dispName, pct: nil, balanceText: unit + compactBalance(b), stale: false))
+                } else if unlimited {
+                    entries.append(MenubarEntry(id: pid, name: dispName, pct: nil, balanceText: "∞", stale: false))
+                }
+            }
+        }
+        // 记录本轮正常平台的最新条目；清掉已取消配置平台的残留
+        let now = Date()
+        lastGoodByProvider = lastGoodByProvider.filter { provs[$0.key] != nil }
+        for pid in provOrder where provs[pid]!.ok > 0 {
+            let fresh = entries.filter { !$0.stale && ($0.id == pid || $0.id.hasPrefix("\(pid)#")) }
+            if !fresh.isEmpty { lastGoodByProvider[pid] = (fresh, now) }
+        }
+        // 本轮全错的平台沿用最近一次数据（带 ? 标记），不再让条目凭空消失
+        for pid in provOrder where provs[pid]!.ok == 0 {
+            if let lg = lastGoodByProvider[pid], now.timeIntervalSince(lg.at) < staleKeepInterval {
+                entries.append(contentsOf: lg.entries.map {
+                    MenubarEntry(id: $0.id, name: $0.name, pct: $0.pct, balanceText: $0.balanceText, stale: true)
+                })
+            }
         }
         applyMenubar(entries)
         checkNotifications(checks)

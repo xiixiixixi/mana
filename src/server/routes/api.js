@@ -1,5 +1,5 @@
 const { createUsageOrchestrator } = require('../services/usageOrchestrator');
-const { quotaRemaining, minRemainingPct } = require('../services/remaining');
+const { quotaRemaining } = require('../services/remaining');
 
 function createApiRouter(providers, keyStore, cache) {
   const router = require('express').Router();
@@ -65,6 +65,8 @@ function createApiRouter(providers, keyStore, cache) {
       const pid = r.id;
       const keys = keyStore.getAllKeysForProvider(sid, pid);
       if (keys.length <= 1) { expanded.push(r); continue; }
+      // fetchOne 已逐 key 拉过（含缓存/冷却），直接复用，避免二次请求上游
+      if (Array.isArray(r._perKey)) { expanded.push(...r._perKey); continue; }
       // Per-key expansion
       const provider = providers.get(pid);
       for (const keyEntry of keys) {
@@ -108,17 +110,24 @@ function createApiRouter(providers, keyStore, cache) {
   // GET /api/summary — 单对象摘要（statusline/CLI 场景：一次请求一个数字）
   router.get('/summary', async (req, res) => {
     const { expanded } = await collectUsage(req.sessionId);
-    let lowest = null, lowestProvider = null;
+    let lowest = null, lowestProvider = null, lowestQuota = null;
     for (const p of expanded) {
       if (p.status === 'error') continue;
-      const m = minRemainingPct(p.quotas);
-      if (m !== null && (lowest === null || m < lowest)) { lowest = m; lowestProvider = p.label ? `${p.name}·${p.label}` : p.name; }
+      for (const q of p.quotas || []) {
+        const r = quotaRemaining(q);
+        if (r?.kind === 'percent' && (lowest === null || r.remainingPct < lowest)) {
+          lowest = r.remainingPct;
+          lowestProvider = p.label ? `${p.name}·${p.label}` : p.name;
+          lowestQuota = q.label || '额度';
+        }
+      }
     }
     res.json({
       schemaVersion: 1,
       lowestRemainingPct: lowest,
       lowestProvider,
-      providerCount: expanded.filter(p => p.status !== 'error').length,
+      lowestQuota,
+      providerCount: expanded.filter(p => p !== undefined && p.status !== 'error').length,
       updatedAt: Date.now(),
     });
   });

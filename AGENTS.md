@@ -29,7 +29,7 @@ mana/  (repo root = project root)
 | Task | Location | Notes |
 |------|----------|-------|
 | Add a new AI platform | `src/server/providers/` | Copy an existing provider, register in `registry.js`; set `consoleUrl` for the card link |
-| Change menu bar icon/mode | `src-swift/main.swift` `applyMenubar()` + settings PREFERENCES | Attention mode: anchor gauge always; per-provider item only when remaining < `ui.attentionPct` (default 80), sorted most-urgent-last (rightmost). **Notch constraint** (see ANTI-PATTERNS) |
+| Change menu bar icon/mode | `src-swift/main.swift` `applyMenubar()`/`refresh()` + settings PREFERENCES | Attention mode: anchor gauge always; per-quota item only when remaining < `ui.attentionPct` (default 80) — multi-quota providers split by quota kind with tag suffix (智谱·5h / 智谱·MCP, see `menubarTag()` in MenubarLogic.swift), ascending order capped at 4 items (most-urgent leftmost, notch-safe); provider fetch errors keep last-known data 10min marked `?` (`lastGoodByProvider`). **Notch constraint** (see ANTI-PATTERNS) |
 | Quota display semantics | `src/server/services/remaining.js` (server) + `rem()` in popover.html + `refresh()` in main.swift | **All three must stay in sync**: progress is always "remaining" (100-used/total, or balance/total) |
 | Reset countdown | provider quota `resetIn` field | Balance-type quotas show "↻ --" (no reset cycle); windowed providers fill resetIn (formatResetAt/formatDuration) |
 | Notifications | `main.swift` `checkNotifications()` + `/api/config` | Threshold dedup via UserDefaults `tln.notifySnap`; pause via right-click menu (`tln.pauseUntil`) |
